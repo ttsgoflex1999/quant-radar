@@ -59,6 +59,7 @@ def get_live_data():
         
         return final_df
     except Exception as e:
+        st.error(f"🚨 后台真实报错原因: {e}")  # <--- 加上这一行透视代码
         return None
 
 # ================= 4. UI 渲染与动态上色 =================
