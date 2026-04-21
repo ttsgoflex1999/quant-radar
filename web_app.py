@@ -29,8 +29,8 @@ st.markdown("---")
 def get_live_data():
     try:
         # 1. 读取我们昨晚扫描出的精华名单 和 底层像素名单
-        df_target = pd.read_csv("今日重点关注_100至201.csv")
-        df_raw = pd.read_csv("底层数据_100至201.csv")
+        df_target = pd.read_csv("今日重点关注_最新.csv")
+        df_raw = pd.read_csv("底层数据_最新.csv")
         
         # 补齐6位股票代码
         df_target['代码'] = df_target['代码'].astype(str).str.zfill(6)
