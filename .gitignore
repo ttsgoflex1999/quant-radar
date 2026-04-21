@@ -1,2 +1,8 @@
 stock_scanner.py
 target_stocks.csv
+*.png
+*.txt
+get_mouse_pos.py
+get_stock_list.py
+test_vision.py
+.DS_Store
