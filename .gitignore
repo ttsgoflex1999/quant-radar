@@ -1,7 +1,7 @@
 stock_scanner.py
 target_stocks.csv
 *.png
-*.txt
+扫描战报*.txt
 get_mouse_pos.py
 get_stock_list.py
 test_vision.py
