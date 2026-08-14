@@ -146,7 +146,7 @@ def save_dual_track_result(code, name, visual_string, data_array, score, tier):
 def worker(device_id, task_queue, worker_name):
     try:
         d = u2.connect(device_id)
-        d.set_fastinput_ime(True) 
+        d.set_input_ime(True) 
         print(f"✅ {worker_name} ({device_id}) 神经直连成功，准备抢单！")
     except Exception as e:
         print(f"❌ {worker_name} ({device_id}) 连接失败: {e}")
