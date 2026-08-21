@@ -2,7 +2,7 @@ import uiautomator2 as u2
 from PIL import Image
 
 # ================= 🎛️ 终极黄金参数配置 =================
-DEVICE_ID = "127.0.0.1:26656"
+DEVICE_ID = "127.0.0.1:16416"
 # 焊死的黄金距离：日K底部往下 798 个像素就是红绿柱中心
 OFFSET_Y = 845
 SCAN_X_START = 10

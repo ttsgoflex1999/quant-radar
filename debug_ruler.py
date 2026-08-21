@@ -3,7 +3,7 @@ from PIL import Image, ImageDraw, ImageFont
 import time
 
 # ================= 🎛️ 调试配置 =================
-DEVICE_ID = "127.0.0.1:26656"
+DEVICE_ID = "127.0.0.1:16416"
 # ===============================================
 
 def run_visual_debugger():

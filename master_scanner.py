@@ -28,10 +28,10 @@ POS_BACK = (75, 112)
 POS_RESULT = (540, 250)   
 
 # 🎯【视觉雷达黄金参数】回归原始单行设定！
-OFFSET_Y = 844            # 焊死的黄金高度：日K底部往下 844
+OFFSET_Y = 845           # 焊死的黄金高度：日K底部往下 844
 VALIDATOR_OFFSET_Y = 300  # 🎯【已修复】高空验证雷达：日K底部【往下】 300 像素，直指 K 线主图
-SCAN_X_START = 5
-SCAN_X_END = 741
+SCAN_X_START = 10
+SCAN_X_END = 750
 
 # 💾【数据输出配置】
 OUTPUT_TXT = "扫描战报_最新.txt"
