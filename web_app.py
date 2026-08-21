@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import requests
 import time
+import os
 from streamlit_autorefresh import st_autorefresh
 
 # ================= 1. 网页全局配置 =================
@@ -9,16 +10,43 @@ st.set_page_config(page_title="猎鹰量化雷达引擎", page_icon="🦅", layo
 st.markdown("<style>#MainMenu {visibility: hidden;} footer {visibility: hidden;} header {visibility: hidden;}</style>", unsafe_allow_html=True)
 st_autorefresh(interval=60000, limit=10000, key="data_refresh")
 
-# ================= 2. 侧边栏：核心双模切换 =================
+# ================= 2. 🤖 核心升级：自动嗅探最新激活的战术 =================
+def get_active_mode_index():
+    """根据底层数据文件的最后更新时间，智能判断当前正在运行的雷达类型"""
+    time_daily = 0
+    time_pullup = 0
+    
+    if os.path.exists("优质横盘重点关注_最新.csv"):
+        time_daily = os.path.getmtime("优质横盘重点关注_最新.csv")
+        
+    if os.path.exists("准备拉升重点关注_最新.csv"):
+        time_pullup = os.path.getmtime("准备拉升重点关注_最新.csv")
+        
+    # 如果拉升雷达的数据比日K雷达更新，默认选中索引 1，否则索引 0
+    if time_pullup > time_daily:
+        return 1 
+    return 0
+
+# ================= 3. 侧边栏：中控台 =================
 st.sidebar.title("🎛️ 猎鹰雷达中控台")
+
+active_index = get_active_mode_index()
+
 radar_mode = st.sidebar.radio(
     "请选择当前激活的战术看板：",
-    ["🔴 底部红绿柱雷达 (日K洗盘)", "🚀 准备拉升雷达 (周/月K拐点)"]
+    ["🔴 底部红绿柱雷达 (日K洗盘)", "🚀 准备拉升雷达 (周/月K拐点)"],
+    index=active_index  # 👈 核心修改：将默认选项绑定给自动算出来的索引
 )
 st.sidebar.markdown("---")
-st.sidebar.info("提示：请确保本地对应的量化机甲脚本正在运行并同步数据。")
 
-# ================= 3. 腾讯底层接口极速获取引擎 =================
+if active_index == 1 and "准备拉升" in radar_mode:
+    st.sidebar.success("🤖 系统已自动为您追踪至【准备拉升】最新战况")
+elif active_index == 0 and "日K" in radar_mode:
+    st.sidebar.success("🤖 系统已自动为您追踪至【日K洗盘】最新战况")
+else:
+    st.sidebar.info("📌 您当前正在手动回看历史面板")
+
+# ================= 4. 腾讯底层接口极速获取引擎 =================
 def get_tencent_live_data(stock_codes):
     if not stock_codes:
         return pd.DataFrame()
@@ -54,7 +82,7 @@ def get_tencent_live_data(stock_codes):
     except Exception as e:
         return None
 
-# ================= 4. 战术模式 1：底部红绿柱 (日K) =================
+# ================= 5. 战术模式 1：底部红绿柱 (日K) =================
 if "日K" in radar_mode:
     st.title("🦅 猎鹰系统：底部横盘与洗盘异动看板")
     st.markdown("⚡️ 搭载 U2视觉红绿柱雷达，锁定主力底仓。交易时间内每 60 秒刷新。")
@@ -102,7 +130,7 @@ if "日K" in radar_mode:
     except FileNotFoundError:
         st.warning("⏳ 正在等待舰队红绿柱雷达数据生成 (找不到 优质横盘重点关注_最新.csv)...")
 
-# ================= 5. 战术模式 2：准备拉升 (周/月K) =================
+# ================= 6. 战术模式 2：准备拉升 (周/月K) =================
 elif "周/月K" in radar_mode:
     st.title("🚀 猎鹰系统：周/月级【准备拉升】看板")
     st.markdown("⚡️ 搭载深色灰度识别引擎，精准捕捉主力周月线变盘拐点。")
@@ -127,7 +155,6 @@ elif "周/月K" in radar_mode:
             df_week = final_df[(final_df['周K信号'] == True) & (final_df['月K信号'] == False)].copy()
             df_month = final_df[(final_df['周K信号'] == False) & (final_df['月K信号'] == True)].copy()
             
-            # 显示配置函数
             def style_and_show(df_subset, color_theme):
                 if df_subset.empty:
                     st.info("该级别暂无触发信号的股票。")
@@ -155,7 +182,6 @@ elif "周/月K" in radar_mode:
             col3.metric(label="周K单启数量", value=f"{len(df_week)} 只")
             col4.metric(label="月K单启数量", value=f"{len(df_month)} 只")
 
-            # 渲染三个不同的层级
             st.markdown("### 🔥 【极品】周月共振启动")
             style_and_show(df_both, 'both')
             
