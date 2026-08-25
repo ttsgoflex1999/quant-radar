@@ -34,7 +34,7 @@ count_lock = threading.Lock()
 # ================= 2. ⚡️ 极速特征检测引擎 =================
 def detect_shi_character_fast(img, pixel_base_y):
     """极速检测特定区域是否出现灰色的 '始' 字 (免疫红绿黑线干扰)"""
-    X_START = 730
+    X_START = 745
     X_END = 755
     OFFSET_Y_START = 1035
     OFFSET_Y_END = 1050
@@ -63,6 +63,7 @@ def detect_shi_character_fast(img, pixel_base_y):
 
 # ================= 3. 核心工具包 =================
 def reset_to_main_screen(d, device_name):
+    # 仅在异常兜底时触发退回
     d.click(75, 112)
     time.sleep(1.0)
     d.click(75, 112)
@@ -119,10 +120,8 @@ def worker(device_id, task_queue, worker_name):
             d.click(POS_SEARCH[0], POS_SEARCH[1])
             time.sleep(1.0) 
 
-            # 🎯 战术变更：新增“广告干扰拦截”的局部循环
             input_success = False
             for input_attempt in range(3):
-                # 强行注入文本
                 search_box = d(className="android.widget.EditText")
                 if search_box.exists:
                     search_box.set_text(stock_code)
@@ -131,18 +130,16 @@ def worker(device_id, task_queue, worker_name):
                 
                 time.sleep(1.2) 
                 
-                # 检查是否存在干扰词
                 if d(textContains="机构拆单策略").exists:
                     print(f"  🛡️ [{worker_name}] 遭遇'机构拆单策略'遮挡，重新输入尝试刷新(第{input_attempt+1}次)...")
-                    continue  # 跳过下面的点击动作，回到循环开头重新输入
+                    continue  
                 else:
                     input_success = True
-                    break  # 没有干扰，完美过关，跳出局部循环
+                    break  
             
             if not input_success:
                 raise Exception("连续3次遭遇'机构拆单策略'干扰，主动触发整机重试")
 
-            # 🎯 战术动作：视觉雷达动态分流 (检测"综合")
             if d(textContains="综合").exists:
                 print(f"  👀 [{worker_name}] 发现'综合'界面，修正点击落点至 (450, 350)")
                 d.click(450, 350)
@@ -151,14 +148,14 @@ def worker(device_id, task_queue, worker_name):
                 
             time.sleep(1.5) 
 
-            # 🎯 战术动作 1：寻找并点击周K
+            # 🎯 找周K
             target_zhou = d(text="周K")
             weekly_shi = False
             monthly_shi = False
             
             if target_zhou.wait(timeout=5.0):
                 target_zhou.click()
-                time.sleep(2.0) # 渲染缓冲
+                time.sleep(2.0) 
                 
                 info = d.info
                 img_zhou = d.screenshot(format='pillow').convert('RGB')
@@ -167,11 +164,11 @@ def worker(device_id, task_queue, worker_name):
                 
                 weekly_shi = detect_shi_character_fast(img_zhou, pixel_base_y_zhou)
 
-                # 🎯 战术动作 2：寻找并点击月K
+                # 🎯 找月K
                 target_yue = d(text="月K")
                 if target_yue.wait(timeout=5.0):
                     target_yue.click()
-                    time.sleep(2.0) # 渲染缓冲
+                    time.sleep(2.0) 
                     
                     img_yue = d.screenshot(format='pillow').convert('RGB')
                     pixel_base_y_yue = int(target_yue.info['bounds']['bottom'] * scale_y)
@@ -183,8 +180,7 @@ def worker(device_id, task_queue, worker_name):
                     print(f"  📺 [{worker_name}] 周K始字: {w_tag} | 月K始字: {m_tag}")
                     save_shi_result(stock_code, stock_name, weekly_shi, monthly_shi)
                     
-                    # 完美成功，点击一次返回退出详情图层，露出搜索栏
-                    d.click(75, 112)
+                    # 🎯 【核心修正 1】：完美成功后，不做任何返回动作！取消 d.click(75, 112) 直接进入下一次循环
                     
                 else:
                     if retry_count < 3:
@@ -307,8 +303,9 @@ if __name__ == "__main__":
             with count_lock:
                 current_completed = global_completed_count
             
-            if current_completed > 0 and current_completed % 500 == 0 and current_completed != last_sync_count:
-                print(f"\n✨ [节点触发] 舰队已完成 {current_completed} 只股票探测，启动阶段性自动存档与推流...")
+            # 🎯 【核心修正 2】：恢复并发同步容错逻辑 (区间跨度判定)
+            if current_completed - last_sync_count >= 500:
+                print(f"\n✨ [节点触发] 舰队实际已完成 {current_completed} 只探测，触发阶段性推流机制...")
                 process_and_sync(is_final=False)
                 last_sync_count = current_completed
                 
