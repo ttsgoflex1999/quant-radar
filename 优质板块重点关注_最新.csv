@@ -1,8 +1,15 @@
 ﻿代码,名称,综合共振标识,日K信号,日K得分,周K信号,周K得分,月K信号,月K得分
+885781,石墨电极,🚀月K起爆 | 👑S级横盘,False,4.0,False,90.8,True,0.0
+885748,可燃冰,🚀月K起爆 | 👑S级横盘,False,0.0,False,87.6,True,0.0
 881159,贸易,🚀月K起爆 | 👑S级横盘,False,0.0,False,85.6,True,18.0
+885398,煤化工概念,🚀月K起爆 | 📦A级洗盘,False,0.0,False,84.0,True,0.0
 881263,农化制品,🚀月K起爆 | 📦A级洗盘,False,0.0,False,82.8,True,0.0
+885782,水泥概念,🚀月K起爆 | 📦A级洗盘,False,0.0,False,81.6,True,16.4
+886005,生物质能发电,🚀月K起爆 | 📦A级洗盘,False,0.0,False,80.4,True,0.0
+885493,上海国企改革,🚀月K起爆 | 📦A级洗盘,False,28.0,False,77.2,True,0.0
 881112,钢铁,🚀月K起爆 | 📦A级洗盘,False,0.0,False,68.0,True,17.2
 881280,风电设备,🚀月K起爆 | 📦A级洗盘,True,30.0,False,62.0,True,0.0
+885743,军民融合,🚀月K起爆 | 📦A级洗盘,False,2.8,False,60.8,True,0.0
 881166,军工装备,🚀月K起爆 | 📦A级洗盘,True,26.4,False,60.4,True,0.0
 881276,军工电子,🚀月K起爆,False,18.4,False,56.4,True,0.0
 881274,影视院线,🚀月K起爆,False,25.6,False,53.2,True,0.0
@@ -12,7 +19,10 @@
 885935,抽水蓄能,🚀月K起爆,False,35.2,False,0.0,True,0.0
 886039,ERP概念,👑S级横盘,False,0.0,False,89.2,False,0.0
 885980,华为鲲鹏,👑S级横盘,False,0.0,False,87.6,False,0.0
+885974,两轮车,👑S级横盘,False,0.0,False,87.6,False,0.0
 885964,俄乌冲突概念,👑S级横盘,False,0.0,False,85.6,False,0.0
+885457,手机游戏,👑S级横盘,False,26.4,False,85.6,False,0.0
+886041,数据要素,👑S级横盘,False,0.0,False,85.2,False,0.0
 885894,海南自贸区,📦A级洗盘,False,0.0,False,84.4,False,7.2
 881269,轨交设备,📦A级洗盘,False,0.0,False,84.0,False,0.0
 885456,互联网金融,📦A级洗盘,False,22.0,False,83.2,False,0.0
@@ -20,59 +30,91 @@
 881128,汽车服务及其他,📦A级洗盘,False,0.0,False,81.2,False,19.2
 881266,橡胶制品,📦A级洗盘,False,0.0,False,81.2,False,0.0
 885835,参股银行,📦A级洗盘,False,0.0,False,81.2,False,0.0
+885792,赛马概念,📦A级洗盘,False,0.0,False,81.2,False,0.0
 881116,建筑装饰,📦A级洗盘,False,0.0,False,80.8,False,0.0
+885961,净水概念,📦A级洗盘,False,0.0,False,80.8,False,0.0
 881283,多元金融,📦A级洗盘,False,18.4,False,80.4,False,15.2
 885692,地下管网,📦A级洗盘,False,0.0,False,79.6,False,0.0
 885967,化肥,📦A级洗盘,False,0.0,False,78.8,False,0.0
+885690,PPP概念,📦A级洗盘,False,0.0,False,78.8,False,0.0
 885975,电子身份证,📦A级洗盘,False,0.0,False,78.4,False,0.0
 885818,工业大麻,📦A级洗盘,False,0.0,False,78.4,False,0.0
+885386,建筑节能,📦A级洗盘,False,0.0,False,78.4,False,0.0
 885410,固废处理,📦A级洗盘,False,0.0,False,78.0,False,0.0
 881136,服装家纺,📦A级洗盘,False,0.0,False,77.2,False,0.0
+886076,军工信息化,📦A级洗盘,False,0.0,False,77.2,False,0.0
+885505,生态农业,📦A级洗盘,False,0.0,False,77.2,False,0.0
+885866,数字货币,📦A级洗盘,False,28.8,False,77.2,False,0.0
 881167,非金属材料,📦A级洗盘,False,0.0,False,76.8,False,0.0
 881181,环境治理,📦A级洗盘,False,0.0,False,76.8,False,0.0
 881108,化学原料,📦A级洗盘,False,0.0,False,76.4,False,0.0
+885990,露营经济,📦A级洗盘,False,0.0,False,76.4,False,0.0
+886026,POE胶膜,📦A级洗盘,False,0.0,False,76.4,False,0.0
 885938,换电概念,📦A级洗盘,False,0.0,False,76.0,False,0.0
+885854,垃圾分类,📦A级洗盘,False,0.0,False,74.8,False,0.0
 886021,国企改革,📦A级洗盘,False,0.0,False,74.4,False,0.0
+885901,可降解塑料,📦A级洗盘,False,0.0,False,74.4,False,0.0
 881174,厨卫电器,📦A级洗盘,False,0.0,False,74.0,False,22.8
+885910,拼多多概念,📦A级洗盘,False,0.0,False,74.0,False,0.0
 881180,石油加工贸易,📦A级洗盘,False,0.0,False,72.8,False,0.0
 885640,草甘膦,📦A级洗盘,False,0.0,False,72.4,False,9.6
 885747,共享单车,📦A级洗盘,False,6.4,False,72.4,False,0.0
+885759,人脸识别,📦A级洗盘,False,0.0,False,72.4,False,0.0
 881118,专用设备,📦A级洗盘,False,0.0,False,72.0,False,0.0
 886066,飞行汽车(eVTOL),📦A级洗盘,False,0.0,False,72.0,False,0.0
+885706,农机,📦A级洗盘,False,0.0,False,71.6,False,0.0
 885825,冰雪产业,📦A级洗盘,False,0.0,False,71.2,False,0.0
+885587,举牌,📦A级洗盘,False,0.0,False,71.2,False,0.0
 885562,高铁,📦A级洗盘,False,0.0,False,70.8,False,0.0
+885863,磷化工,📦A级洗盘,False,0.0,False,70.8,False,0.0
 885944,动力电池回收,📦A级洗盘,False,0.8,False,70.4,False,0.0
+885999,汽车热管理,📦A级洗盘,False,0.0,False,70.4,False,0.0
 886067,低空经济,📦A级洗盘,False,0.0,False,70.0,False,0.0
 881284,环保设备,📦A级洗盘,False,0.0,False,69.2,False,0.0
 881126,汽车零部件,📦A级洗盘,False,0.0,False,69.2,False,0.0
 885525,白酒概念,📦A级洗盘,False,0.0,False,69.2,False,0.0
 886018,高压氧舱,📦A级洗盘,False,0.0,False,69.2,False,0.0
 881115,建筑材料,📦A级洗盘,False,0.0,False,68.8,False,0.0
+885697,深圳国企改革,📦A级洗盘,False,0.0,False,68.8,False,0.0
 881265,塑料制品,📦A级洗盘,False,0.0,False,68.4,False,0.0
 885530,黄金概念,📦A级洗盘,False,0.0,False,68.4,False,0.0
 886030,成飞概念,📦A级洗盘,False,0.0,False,68.0,False,0.0
+885543,家用电器,📦A级洗盘,False,0.0,False,68.0,False,0.0
 881130,计算机设备,📦A级洗盘,False,0.0,False,67.6,False,0.0
+885355,石墨烯,📦A级洗盘,False,0.0,False,67.6,False,0.0
 886061,长安汽车概念,📦A级洗盘,False,0.0,False,67.2,False,0.0
+885972,金属回收,📦A级洗盘,False,0.0,False,66.8,False,0.0
 881109,化学制品,📦A级洗盘,False,0.0,False,66.4,False,0.0
 886012,宠物经济,📦A级洗盘,False,0.0,False,66.4,False,0.0
+885572,水利,📦A级洗盘,False,0.0,False,66.0,False,0.0
+885497,旅游概念,📦A级洗盘,False,0.0,False,65.6,False,0.0
+885472,上海自贸区,📦A级洗盘,False,0.0,False,65.6,False,0.0
 881138,包装印刷,📦A级洗盘,False,0.0,False,65.2,False,0.0
+885642,跨境电商,📦A级洗盘,False,0.0,False,65.2,False,0.0
 881268,工程机械,📦A级洗盘,False,8.4,False,64.8,False,0.0
 885461,充电桩,📦A级洗盘,False,0.0,False,64.8,False,0.0
+885767,互联网保险,📦A级洗盘,False,32.8,False,64.8,False,21.2
 881131,白色家电,📦A级洗盘,False,0.0,False,64.4,False,0.0
 885617,福建自贸区,📦A级洗盘,False,0.0,False,64.4,False,0.0
 885739,股权转让(并购重组),📦A级洗盘,False,0.0,False,64.4,False,0.0
+885898,免税店,📦A级洗盘,False,0.0,False,64.4,False,30.4
 881178,教育,📦A级洗盘,False,0.0,False,64.0,False,24.4
 885844,国产操作系统,📦A级洗盘,False,0.0,False,64.0,False,0.0
 885924,共同富裕示范区,📦A级洗盘,False,0.0,False,63.6,False,0.0
 881122,光学光电子,📦A级洗盘,False,0.0,False,62.8,False,0.0
 881124,消费电子,📦A级洗盘,False,0.0,False,62.8,False,0.0
 881137,造纸,📦A级洗盘,False,0.0,False,62.8,False,0.0
+885514,京津冀一体化,📦A级洗盘,False,0.0,False,62.8,False,0.0
 885921,储能,📦A级洗盘,False,0.0,False,62.4,False,0.0
 885540,三胎概念,📦A级洗盘,False,0.0,False,62.4,False,0.0
+885502,冷链物流,📦A级洗盘,False,0.0,False,62.4,False,0.0
+886010,空气能热泵,📦A级洗盘,False,0.0,False,62.0,False,0.0
 886003,钒电池,📦A级洗盘,False,2.8,False,61.2,False,0.0
+885823,氢能源,📦A级洗盘,False,0.0,False,61.2,False,0.0
 886001,高压快充,📦A级洗盘,False,0.0,False,60.8,False,0.0
 885834,华为汽车,📦A级洗盘,False,1.2,False,60.4,False,0.0
 881117,通用设备,📦A级洗盘,False,0.0,False,60.0,False,0.0
+885936,绿色电力,📦A级洗盘,False,0.0,False,60.0,False,0.0
 881277,电机,日K异动,True,10.8,False,44.0,False,0.0
 881157,证券,📦A级洗盘,False,62.0,False,28.4,False,0.0
 885884,航空发动机,日K异动,True,0.0,False,15.6,False,0.0
@@ -80,3 +122,4 @@
 886056,阿尔茨海默概念,日K异动,True,0.0,False,0.0,False,0.0
 885893,国家大基金持股,日K异动,True,33.6,False,0.0,False,0.0
 885551,氟化工概念,日K异动,True,5.6,False,0.0,False,0.0
+886051,减肥药,日K异动,True,0.0,False,0.0,False,0.0
