@@ -118,9 +118,8 @@ try:
             st.dataframe(show_month, use_container_width=True)
 
     # ==========================
-    # 模块二：“始”字变盘捕获 (三分屏)
+    # 模块二：“始”字变盘捕获 (共振大表)
     # ==========================
-    # 🎯 核心修复：修改了这里的判断字符串，完美匹配侧边栏选项
     elif "准备拉升" in radar_mode:
         st.title("🚀 猎鹰系统：'始'字准备拉升变盘")
         st.markdown("---")
@@ -130,40 +129,32 @@ try:
         final_df['周K始字'] = final_df['周K始字'].astype(str).str.lower() == 'true'
         final_df['月K始字'] = final_df['月K始字'].astype(str).str.lower() == 'true'
         
-        tab_shi_day, tab_shi_week, tab_shi_month = st.tabs(["日K起爆点", "周K起爆点", "月K起爆点"])
+        # 🎯 核心逻辑：计算共振数量 (True=1, False=0)
+        final_df['共振周期数'] = final_df['日K始字'].astype(int) + final_df['周K始字'].astype(int) + final_df['月K始字'].astype(int)
         
-        with tab_shi_day:
-            df_shi_day = final_df[final_df['日K始字'] == True].copy()
-            df_shi_day = df_shi_day.sort_values(by=['涨跌幅'], ascending=False)
-            if df_shi_day.empty:
-                st.info("暂无符合日K级别拉升信号的板块。")
-            else:
-                show_shi_day = df_shi_day[['代码', '名称', '最新价', '涨跌幅']]
-                show_shi_day.columns = ['板块代码', '板块名称', '最新价', '今日涨幅(%)']
-                show_shi_day.index = range(1, len(show_shi_day) + 1)
-                st.dataframe(show_shi_day, use_container_width=True)
+        # 仅筛选出至少在一个周期出现“始”字的板块
+        df_shi = final_df[final_df['共振周期数'] > 0].copy()
+        
+        if df_shi.empty:
+            st.info("暂无任何板块出现'始'字变盘信号。")
+        else:
+            # 🎯 极限排序：月K优先 -> 共振数越多越靠前 -> 周K次之 -> 当日涨幅
+            df_shi = df_shi.sort_values(
+                by=['月K始字', '共振周期数', '周K始字', '涨跌幅'], 
+                ascending=[False, False, False, False]
+            )
             
-        with tab_shi_week:
-            df_shi_week = final_df[final_df['周K始字'] == True].copy()
-            df_shi_week = df_shi_week.sort_values(by=['涨跌幅'], ascending=False)
-            if df_shi_week.empty:
-                st.info("暂无符合周K级别拉升信号的板块。")
-            else:
-                show_shi_week = df_shi_week[['代码', '名称', '最新价', '涨跌幅']]
-                show_shi_week.columns = ['板块代码', '板块名称', '最新价', '今日涨幅(%)']
-                show_shi_week.index = range(1, len(show_shi_week) + 1)
-                st.dataframe(show_shi_week, use_container_width=True)
+            # 美化显示
+            df_shi['月K变盘(最高权重)'] = df_shi['月K始字'].apply(lambda x: "🔥 触发" if x else "➖")
+            df_shi['周K变盘(中期)'] = df_shi['周K始字'].apply(lambda x: "🔥 触发" if x else "➖")
+            df_shi['日K变盘(短期)'] = df_shi['日K始字'].apply(lambda x: "🔥 触发" if x else "➖")
             
-        with tab_shi_month:
-            df_shi_month = final_df[final_df['月K始字'] == True].copy()
-            df_shi_month = df_shi_month.sort_values(by=['涨跌幅'], ascending=False)
-            if df_shi_month.empty:
-                st.info("暂无符合月K级别拉升信号的板块。")
-            else:
-                show_shi_month = df_shi_month[['代码', '名称', '最新价', '涨跌幅']]
-                show_shi_month.columns = ['板块代码', '板块名称', '最新价', '今日涨幅(%)']
-                show_shi_month.index = range(1, len(show_shi_month) + 1)
-                st.dataframe(show_shi_month, use_container_width=True)
+            show_shi = df_shi[['代码', '名称', '月K变盘(最高权重)', '周K变盘(中期)', '日K变盘(短期)', '共振周期数', '最新价', '涨跌幅']]
+            show_shi.columns = ['板块代码', '板块名称', '月K变盘(最高权重)', '周K变盘(中期)', '日K变盘(短期)', '总共振数量', '实时最新价', '今日涨幅(%)']
+            show_shi.index = range(1, len(show_shi) + 1)
+            
+            st.metric(label="当前捕获变盘目标总数", value=f"{len(show_shi)} 个")
+            st.dataframe(show_shi, use_container_width=True, height=800)
 
 except FileNotFoundError:
     st.warning("⏳ 等待机甲生成底层数据文件 (找不到 板块全维底层数据_最新.csv)...")
