@@ -1,5 +1,5 @@
 import uiautomator2 as u2
-from PIL import Image, ImageDraw
+from PIL import Image
 import pandas as pd
 import time
 import os
@@ -48,16 +48,17 @@ def command_listener():
         try:
             cmd = input().strip().lower()
             if cmd == 'p':
-                print("\n" + "="*40)
-                print("⏸️  【司令部】已发送暂停信号！各机甲收尾后将悬停...")
+                print("\n" + "="*50)
+                print("⏸️ 【系统暂停】各机甲将在完成当前任务后悬停。")
+                print("⏳ 正在尝试将当前战果强制推送到网站云端...")
                 pause_event.clear()
-                # 🎯 核心新增：暂停时立刻触发一次云端同步
+                # 🎯 核心逻辑：暂停时强制调用同步函数上传代码和数据
                 process_and_sync(is_final=False)
-                print("="*40 + "\n")
+                print("="*50 + "\n")
             elif cmd == 'r':
-                print("\n" + "="*40)
-                print("▶️  【司令部】已发送恢复信号！机甲继续扫描...")
-                print("="*40 + "\n")
+                print("\n" + "="*50)
+                print("▶️ 【系统恢复】机甲解除锁定，继续执行扫描！")
+                print("="*50 + "\n")
                 pause_event.set()   
         except EOFError:
             break
@@ -122,7 +123,6 @@ def reset_to_main_screen(d):
     time.sleep(1.5)
 
 def extract_timeframe_data(d, tf_name, worker_name, calc_score=True):
-    """加入 calc_score 控制，周月K跳过得分计算"""
     target = d(text=tf_name)
     if not target.wait(timeout=4.0):
         d.click(450, 350)
@@ -163,7 +163,6 @@ def extract_timeframe_data(d, tf_name, worker_name, calc_score=True):
 
     best_score, best_tier = 0, "无评级"
     
-    # 🎯 核心修改：仅在 calc_score 为 True (即日K) 时，才裁剪计算形态分
     if calc_score and (last_red_x != -1 or last_green_x != -1):
         right = 755
         top, bottom = base_bottom + BOX_TOP_OFFSET, base_bottom + BOX_BOTTOM_OFFSET
@@ -250,7 +249,6 @@ def worker(device_id, task_queue, worker_name):
 
             results = {}
             for tf in ["日K", "周K", "月K"]:
-                # 🎯 核心修改：明确指定周月K不计算分数
                 success, res = extract_timeframe_data(d, tf, worker_name, calc_score=(tf == "日K"))
                 if not success: raise Exception(f"{tf} 加载失败")
                 results[tf] = res
@@ -271,47 +269,19 @@ def worker(device_id, task_queue, worker_name):
 # ================= 5. 🚀 司令部总调度大厅 =================
 def process_and_sync(is_final=True):
     try:
-        if not os.path.exists(OUTPUT_CSV): return
-        df_scan = pd.read_csv(OUTPUT_CSV)
-        target_stocks = []
-        
-        for index, row in df_scan.iterrows():
-            d_shi, d_score = str(row['日K始字']).strip() == 'True', pd.to_numeric(row['日K得分'], errors='coerce')
-            w_shi, m_shi = str(row['周K始字']).strip() == 'True', str(row['月K始字']).strip() == 'True'
-            
-            if d_shi or w_shi or m_shi or d_score >= 60:
-                action = []
-                if w_shi and m_shi: action.append("🔥周月双启")
-                elif w_shi: action.append("📈周K起爆")
-                elif m_shi: action.append("🚀月K起爆")
-                
-                if d_score >= 85: action.append("👑S级横盘")
-                elif d_score >= 60: action.append("📦A级洗盘")
-                
-                target_stocks.append({
-                    '代码': str(row['代码']).zfill(6), 
-                    '名称': row['名称'],
-                    '综合共振标识': " | ".join(action) if action else "日K异动",
-                    '日K信号': d_shi, '日K得分': d_score, '日K定级': row['日K定级'], '日K序列': row['日K序列'],
-                    '周K信号': w_shi, '周K序列': row['周K序列'],
-                    '月K信号': m_shi, '月K序列': row['月K序列']
-                })
-        
-        filtered_df = pd.DataFrame(target_stocks)
-        if not filtered_df.empty:
-            filtered_df = filtered_df.sort_values(by=['周K信号', '月K信号', '日K得分'], ascending=[False, False, False])
-            filtered_df.to_csv(FILTERED_CSV, index=False, encoding='utf-8-sig')
-            print(f"  📁 结算：当前捕获 {len(filtered_df)} 个高潜板块。")
-        else:
-            pd.DataFrame(columns=['代码', '名称', '综合共振标识', '日K信号', '日K得分', '日K定级', '日K序列', '周K信号', '周K序列', '月K信号', '月K序列']).to_csv(FILTERED_CSV, index=False, encoding='utf-8-sig')
-
         os.system('git add .') 
-        tag = "终止结算" if is_final else "阶段/暂停同步"
+        tag = "系统终止同步" if is_final else "系统暂停同步"
         os.system(f'git commit -m "🤖 quant-radar {tag}：{time.strftime("%m-%d %H:%M")}"')
-        os.system('git push')
+        
+        push_status = os.system('git push')
+        if push_status != 0:
+            os.system('git config --global http.version HTTP/1.1')
+            os.system('git push')
+            os.system('git config --global http.version HTTP/2')
+        print(f"  ✅ 云端数据 ({tag}) 已成功推送至网站！")
         
     except Exception as e:
-        print(f"\n  ⚠️ 后处理异常: {e}")
+        print(f"\n  ⚠️ 同步异常: {e}")
 
 if __name__ == "__main__":
     print("=== 🚀 开启 quant-radar [板块全维探测] ===")
@@ -363,5 +333,6 @@ if __name__ == "__main__":
         with task_queue.mutex: task_queue.queue.clear()
             
     finally:
+        print("🛑 正在执行最终上传...")
         process_and_sync(is_final=True)
         print("💤 机甲休眠。")
