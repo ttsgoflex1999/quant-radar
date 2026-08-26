@@ -58,7 +58,6 @@ def get_tencent_live_data(stock_codes):
         return None
 
 # ================= 5. 数据读取与渲染 =================
-# 🎯 核心变更：直接读取大盘底层数据库，绝不错杀任何信号
 RAW_CSV = "板块全维底层数据_最新.csv"
 
 try:
@@ -89,9 +88,7 @@ try:
         tab_day, tab_week, tab_month = st.tabs(["日K级别异动", "周K级别异动", "月K级别异动"])
         
         with tab_day:
-            # 过滤出有红绿柱的数据 (距离 < 999)
             df_day = final_df[final_df['日K_dist'] < 999].copy()
-            # 排序：距离越小越靠前 -> 红色优先 -> 日K得分从高到低
             df_day = df_day.sort_values(by=['日K_dist', '日K_color', '日K得分'], ascending=[True, True, False])
             df_day['日K视觉序列'] = df_day['日K序列'].apply(format_seq)
             
@@ -123,7 +120,8 @@ try:
     # ==========================
     # 模块二：“始”字变盘捕获 (三分屏)
     # ==========================
-    elif "始字" in radar_mode:
+    # 🎯 核心修复：修改了这里的判断字符串，完美匹配侧边栏选项
+    elif "准备拉升" in radar_mode:
         st.title("🚀 猎鹰系统：'始'字准备拉升变盘")
         st.markdown("---")
         
@@ -137,26 +135,35 @@ try:
         with tab_shi_day:
             df_shi_day = final_df[final_df['日K始字'] == True].copy()
             df_shi_day = df_shi_day.sort_values(by=['涨跌幅'], ascending=False)
-            show_shi_day = df_shi_day[['代码', '名称', '最新价', '涨跌幅']]
-            show_shi_day.columns = ['板块代码', '板块名称', '最新价', '今日涨幅(%)']
-            show_shi_day.index = range(1, len(show_shi_day) + 1)
-            st.dataframe(show_shi_day, use_container_width=True)
+            if df_shi_day.empty:
+                st.info("暂无符合日K级别拉升信号的板块。")
+            else:
+                show_shi_day = df_shi_day[['代码', '名称', '最新价', '涨跌幅']]
+                show_shi_day.columns = ['板块代码', '板块名称', '最新价', '今日涨幅(%)']
+                show_shi_day.index = range(1, len(show_shi_day) + 1)
+                st.dataframe(show_shi_day, use_container_width=True)
             
         with tab_shi_week:
             df_shi_week = final_df[final_df['周K始字'] == True].copy()
             df_shi_week = df_shi_week.sort_values(by=['涨跌幅'], ascending=False)
-            show_shi_week = df_shi_week[['代码', '名称', '最新价', '涨跌幅']]
-            show_shi_week.columns = ['板块代码', '板块名称', '最新价', '今日涨幅(%)']
-            show_shi_week.index = range(1, len(show_shi_week) + 1)
-            st.dataframe(show_shi_week, use_container_width=True)
+            if df_shi_week.empty:
+                st.info("暂无符合周K级别拉升信号的板块。")
+            else:
+                show_shi_week = df_shi_week[['代码', '名称', '最新价', '涨跌幅']]
+                show_shi_week.columns = ['板块代码', '板块名称', '最新价', '今日涨幅(%)']
+                show_shi_week.index = range(1, len(show_shi_week) + 1)
+                st.dataframe(show_shi_week, use_container_width=True)
             
         with tab_shi_month:
             df_shi_month = final_df[final_df['月K始字'] == True].copy()
             df_shi_month = df_shi_month.sort_values(by=['涨跌幅'], ascending=False)
-            show_shi_month = df_shi_month[['代码', '名称', '最新价', '涨跌幅']]
-            show_shi_month.columns = ['板块代码', '板块名称', '最新价', '今日涨幅(%)']
-            show_shi_month.index = range(1, len(show_shi_month) + 1)
-            st.dataframe(show_shi_month, use_container_width=True)
+            if df_shi_month.empty:
+                st.info("暂无符合月K级别拉升信号的板块。")
+            else:
+                show_shi_month = df_shi_month[['代码', '名称', '最新价', '涨跌幅']]
+                show_shi_month.columns = ['板块代码', '板块名称', '最新价', '今日涨幅(%)']
+                show_shi_month.index = range(1, len(show_shi_month) + 1)
+                st.dataframe(show_shi_month, use_container_width=True)
 
 except FileNotFoundError:
     st.warning("⏳ 等待机甲生成底层数据文件 (找不到 板块全维底层数据_最新.csv)...")
