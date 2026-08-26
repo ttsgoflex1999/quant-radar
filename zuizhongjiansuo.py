@@ -129,10 +129,11 @@ def reset_to_main_screen(d):
 
 def extract_timeframe_data(d, tf_name, worker_name, calc_score=True):
     target = d(text=tf_name)
-    if not target.wait(timeout=4.0):
-        d.click(450, 350)
-        time.sleep(1.0)
-        if not target.wait(timeout=3.0): return False, None
+    
+    # 🎯 核心修复：彻底删除了导致呼出十字光标的 (450, 350) 盲点代码
+    # 找不到就直接返回 False，让外层的 3 次重试机制去处理
+    if not target.wait(timeout=5.0):
+        return False, None
             
     target.click()
     time.sleep(2.0) 
@@ -180,7 +181,7 @@ def extract_timeframe_data(d, tf_name, worker_name, calc_score=True):
 
     result = {
         "shi": has_shi, "score": best_score, "tier": best_tier, 
-        "seq_file": seq_file, "seq_arr": data_array, "seq_term": seq_terminal
+        "seq_file": seq_file, "seq_arr": data_array, "seq_term": terminal
     }
     return True, result
 
@@ -188,7 +189,6 @@ def save_comprehensive_result(code, name, d_res, w_res, m_res):
     global global_completed_count
     current_time = time.strftime("%H:%M:%S", time.localtime())
     
-    # 🎯 核心新增 1：先检查并加入已完成集合，如果已存在则直接拒绝写入
     with set_lock:
         if code in completed_stocks_set:
             return False
@@ -232,7 +232,6 @@ def worker(device_id, task_queue, worker_name):
             
         stock_code, stock_name, retry_count = task['代码'], task['名称'], task['重试次数']
         
-        # 🎯 核心防护：若该板块此前已被其他机甲成功记录，直接跳过
         with set_lock:
             if stock_code in completed_stocks_set:
                 task_queue.task_done()
@@ -280,7 +279,6 @@ def worker(device_id, task_queue, worker_name):
                 score_display = f" | 得分: {res['score']}" if tf == "日K" else ""
                 print(f"  📺 [{worker_name}] {tf} | 始字: {'🔴有' if res['shi'] else '无'}{score_display} | 序列: [{res['seq_term'][:20]}...]")
             
-            # 保存数据（内置防重校验）
             saved = save_comprehensive_result(stock_code, stock_name, results["日K"], results["周K"], results["月K"])
             if not saved:
                 print(f"  ⚠️ [{worker_name}] 板块 {stock_code} 此前已被记录，跳过写入。")
@@ -289,14 +287,12 @@ def worker(device_id, task_queue, worker_name):
         except Exception as e:
             print(f"  ⚠️ [{worker_name}] 板块 {stock_code} 异常: {e}")
             
-            # 🎯 核心新增 2：严格的 3 次重试判定机制
             if retry_count < 3:
                 task['重试次数'] += 1
                 print(f"  🔄 [{worker_name}] 将板块 {stock_code} 重新推入队列 (已用机会: {task['重试次数']}/3)...")
                 task_queue.put(task)
             else:
                 print(f"  ❌ [{worker_name}] 板块 {stock_code} 连续 3 次检测失败，已达最大重试上限，放弃并保底记录！")
-                # 3 次均失败时做保底空记录并标记完成，避免再次处理
                 empty_res = {"shi": False, "score": 0, "tier": "检测失败", "seq_file": "", "seq_arr": [], "seq_term": ""}
                 save_comprehensive_result(stock_code, stock_name, empty_res, empty_res, empty_res)
 
@@ -337,7 +333,6 @@ if __name__ == "__main__":
         print(f"❌ 读取CSV失败: {e}")
         exit()
 
-    # 🎯 核心新增：如果 CSV 已经存在，先加载历史已录入的代码，防止重启时重复写入
     if os.path.exists(OUTPUT_CSV):
         try:
             existing_df = pd.read_csv(OUTPUT_CSV, dtype=str)
@@ -354,7 +349,6 @@ if __name__ == "__main__":
 
     task_queue = queue.Queue()
     for index, row in stock_list.iterrows():
-        # 如果历史已完成，直接不放入队列
         if row['代码'] not in completed_stocks_set:
             task_queue.put({'代码': row['代码'], '名称': row['名称'], '重试次数': 0})
     
@@ -371,8 +365,6 @@ if __name__ == "__main__":
 
     last_sync_count = 0
     try:
-        # 🎯 核心修复：不能用 .empty()，因为任务被拿走队列就空了
-        # 必须用 unfinished_tasks > 0，确保所有机甲都执行了 task_done() 汇报完毕
         while task_queue.unfinished_tasks > 0:
             time.sleep(2)
             with count_lock: current_completed = global_completed_count
