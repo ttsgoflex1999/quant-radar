@@ -22,7 +22,7 @@ END_INDEX = 5000
 POS_SEARCH = (1016, 115)  
 POS_RESULT = (450, 250)   
 
-OFFSET_Y = 845           
+OFFSET_Y = 930           
 VALIDATOR_OFFSET_Y = 300  
 SCAN_X_START = 10
 SCAN_X_END = 750
@@ -36,9 +36,15 @@ OUTPUT_TXT = "板块雷达战报_最新.txt"
 OUTPUT_CSV = "板块全维底层数据_最新.csv"
 FILTERED_CSV = "优质板块重点关注_最新.csv"
 
+# 🔒 线程锁、计数器与防重复记录集合
 file_lock = threading.Lock()
 global_completed_count = 0 
 count_lock = threading.Lock()
+
+# 🎯 核心新增 1：全局已完成代码集合（防止重复记录）
+completed_stocks_set = set()
+set_lock = threading.Lock()
+
 pause_event = threading.Event()
 pause_event.set()
 
@@ -52,7 +58,6 @@ def command_listener():
                 print("⏸️ 【系统暂停】各机甲将在完成当前任务后悬停。")
                 print("⏳ 正在尝试将当前战果强制推送到网站云端...")
                 pause_event.clear()
-                # 🎯 核心逻辑：暂停时强制调用同步函数上传代码和数据
                 process_and_sync(is_final=False)
                 print("="*50 + "\n")
             elif cmd == 'r':
@@ -183,6 +188,12 @@ def save_comprehensive_result(code, name, d_res, w_res, m_res):
     global global_completed_count
     current_time = time.strftime("%H:%M:%S", time.localtime())
     
+    # 🎯 核心新增 1：先检查并加入已完成集合，如果已存在则直接拒绝写入
+    with set_lock:
+        if code in completed_stocks_set:
+            return False
+        completed_stocks_set.add(code)
+    
     with file_lock: 
         if not os.path.exists(OUTPUT_CSV):
             with open(OUTPUT_CSV, "w", encoding="utf-8") as f:
@@ -199,6 +210,7 @@ def save_comprehensive_result(code, name, d_res, w_res, m_res):
             
     with count_lock:
         global_completed_count += 1
+    return True
 
 # ================= 4. 🤖 打工人线程逻辑 (Worker) =================
 def worker(device_id, task_queue, worker_name):
@@ -219,10 +231,19 @@ def worker(device_id, task_queue, worker_name):
             break
             
         stock_code, stock_name, retry_count = task['代码'], task['名称'], task['重试次数']
-        print(f"\n▶️ [{worker_name}] 锁定板块: [{stock_code}] {stock_name}")
+        
+        # 🎯 核心防护：若该板块此前已被其他机甲成功记录，直接跳过
+        with set_lock:
+            if stock_code in completed_stocks_set:
+                task_queue.task_done()
+                continue
+
+        retry_tag = f"(第{retry_count + 1}次尝试)" if retry_count > 0 else ""
+        print(f"\n▶️ [{worker_name}] 锁定板块: [{stock_code}] {stock_name} {retry_tag}")
 
         try:
-            if retry_count > 0: reset_to_main_screen(d)
+            if retry_count > 0: 
+                reset_to_main_screen(d)
             
             d.click(POS_SEARCH[0], POS_SEARCH[1])
             time.sleep(1.0) 
@@ -230,39 +251,55 @@ def worker(device_id, task_queue, worker_name):
             input_success = False
             for _ in range(3):
                 search_box = d(className="android.widget.EditText")
-                if search_box.exists:
-                    search_box.set_text(stock_code)
-                else:
-                    raise Exception("未找到搜索框")
-                
+                if not search_box.wait(timeout=3.0): 
+                    d.click(POS_SEARCH[0], POS_SEARCH[1])
+                    time.sleep(1.0)
+                    continue 
+                    
+                search_box.set_text(stock_code)
                 time.sleep(1.2) 
-                if d(textContains="机构拆单策略").exists: continue  
+                
+                if d(textContains="机构拆单策略").exists: 
+                    continue  
                 else:
                     input_success = True
                     break  
             
-            if not input_success: raise Exception("遭遇遮挡")
+            if not input_success: 
+                raise Exception("遭遇严重遮挡或搜索框持续丢失")
 
-            if d(textContains="综合").exists: d.click(450, 350)
-            else: d.click(POS_RESULT[0], POS_RESULT[1])
+            d.click(POS_RESULT[0], POS_RESULT[1])
             time.sleep(1.5) 
 
             results = {}
             for tf in ["日K", "周K", "月K"]:
                 success, res = extract_timeframe_data(d, tf, worker_name, calc_score=(tf == "日K"))
-                if not success: raise Exception(f"{tf} 加载失败")
+                if not success: 
+                    raise Exception(f"{tf} 加载失败")
                 results[tf] = res
                 score_display = f" | 得分: {res['score']}" if tf == "日K" else ""
                 print(f"  📺 [{worker_name}] {tf} | 始字: {'🔴有' if res['shi'] else '无'}{score_display} | 序列: [{res['seq_term'][:20]}...]")
             
-            save_comprehensive_result(stock_code, stock_name, results["日K"], results["周K"], results["月K"])
+            # 保存数据（内置防重校验）
+            saved = save_comprehensive_result(stock_code, stock_name, results["日K"], results["周K"], results["月K"])
+            if not saved:
+                print(f"  ⚠️ [{worker_name}] 板块 {stock_code} 此前已被记录，跳过写入。")
             task_queue.task_done()
             
         except Exception as e:
             print(f"  ⚠️ [{worker_name}] 板块 {stock_code} 异常: {e}")
+            
+            # 🎯 核心新增 2：严格的 3 次重试判定机制
             if retry_count < 3:
                 task['重试次数'] += 1
+                print(f"  🔄 [{worker_name}] 将板块 {stock_code} 重新推入队列 (已用机会: {task['重试次数']}/3)...")
                 task_queue.put(task)
+            else:
+                print(f"  ❌ [{worker_name}] 板块 {stock_code} 连续 3 次检测失败，已达最大重试上限，放弃并保底记录！")
+                # 3 次均失败时做保底空记录并标记完成，避免再次处理
+                empty_res = {"shi": False, "score": 0, "tier": "检测失败", "seq_file": "", "seq_arr": [], "seq_term": ""}
+                save_comprehensive_result(stock_code, stock_name, empty_res, empty_res, empty_res)
+
             reset_to_main_screen(d) 
             task_queue.task_done()
 
@@ -300,16 +337,29 @@ if __name__ == "__main__":
         print(f"❌ 读取CSV失败: {e}")
         exit()
 
-    stock_list = df.iloc[START_INDEX:min(END_INDEX, len(df))]
-    
-    if not os.path.exists(OUTPUT_CSV):
+    # 🎯 核心新增：如果 CSV 已经存在，先加载历史已录入的代码，防止重启时重复写入
+    if os.path.exists(OUTPUT_CSV):
+        try:
+            existing_df = pd.read_csv(OUTPUT_CSV, dtype=str)
+            if '代码' in existing_df.columns:
+                completed_stocks_set.update(existing_df['代码'].str.zfill(6).tolist())
+                print(f"📦 已载入历史检测记录：{len(completed_stocks_set)} 个板块（自动避免重复写入）")
+        except Exception:
+            pass
+    else:
         with open(OUTPUT_CSV, "w", encoding="utf-8") as f:
             f.write('时间,代码,名称,日K始字,日K得分,日K定级,日K序列,周K始字,周K序列,月K始字,月K序列\n')
 
+    stock_list = df.iloc[START_INDEX:min(END_INDEX, len(df))]
+
     task_queue = queue.Queue()
     for index, row in stock_list.iterrows():
-        task_queue.put({'代码': row['代码'], '名称': row['名称'], '重试次数': 0})
+        # 如果历史已完成，直接不放入队列
+        if row['代码'] not in completed_stocks_set:
+            task_queue.put({'代码': row['代码'], '名称': row['名称'], '重试次数': 0})
     
+    print(f"🚀 装载待检测板块任务数：{task_queue.qsize()} 个")
+
     threads = []
     for i, device_id in enumerate(DEVICE_LIST):
         worker_name = f"🤖机甲-{i+1}号"
