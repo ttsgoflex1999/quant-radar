@@ -371,7 +371,9 @@ if __name__ == "__main__":
 
     last_sync_count = 0
     try:
-        while not task_queue.empty():
+        # 🎯 核心修复：不能用 .empty()，因为任务被拿走队列就空了
+        # 必须用 unfinished_tasks > 0，确保所有机甲都执行了 task_done() 汇报完毕
+        while task_queue.unfinished_tasks > 0:
             time.sleep(2)
             with count_lock: current_completed = global_completed_count
             if current_completed - last_sync_count >= 100:
@@ -383,6 +385,6 @@ if __name__ == "__main__":
         with task_queue.mutex: task_queue.queue.clear()
             
     finally:
-        print("🛑 正在执行最终上传...")
+        print("🛑 所有机甲已汇报完成，正在执行最终上传...")
         process_and_sync(is_final=True)
         print("💤 机甲休眠。")
