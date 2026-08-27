@@ -22,12 +22,22 @@ END_INDEX = 5000
 POS_SEARCH = (1016, 115)  
 POS_RESULT = (450, 250)   
 
-OFFSET_Y = 935           
+# 📍 1. 红绿柱检测参数 (Y轴基于日K按钮偏移)
+OFFSET_Y = 932              
 VALIDATOR_OFFSET_Y = 300  
 SCAN_X_START = 10
-SCAN_X_END = 750
-BOX_TOP_OFFSET = 100
-BOX_BOTTOM_OFFSET = 600
+SCAN_X_END = 755
+
+# 📍 2. 始字检测参数 (Y轴基于日K按钮偏移，X轴绝对位置)
+SHI_X_START = 730
+SHI_X_END = 770
+SHI_Y_START = 1120
+SHI_Y_END = 1150
+
+# 📍 3. 横盘评分大框参数 (Y轴基于日K按钮偏移)
+BOX_TOP_OFFSET = 130           
+BOX_BOTTOM_OFFSET = 650        
+BOX_X_END = 770              # 👈 核心修改 1：提取评分大框的右侧固定边界
 AMP_MAX_TOLERANCE = 0.30   
 DRIFT_MAX_TOLERANCE = 0.20 
 
@@ -41,7 +51,7 @@ file_lock = threading.Lock()
 global_completed_count = 0 
 count_lock = threading.Lock()
 
-# 🎯 核心新增 1：全局已完成代码集合（防止重复记录）
+# 🎯 全局已完成代码集合（防止重复记录）
 completed_stocks_set = set()
 set_lock = threading.Lock()
 
@@ -70,14 +80,11 @@ def command_listener():
 
 # ================= 2. ⚡️ 特征检测引擎 =================
 def detect_shi_character_fast(img, pixel_base_y):
-    X_START, X_END = 730, 755
-    OFFSET_Y_START, OFFSET_Y_END = 1035, 1050
-    
-    top = pixel_base_y + OFFSET_Y_START
-    bottom = pixel_base_y + OFFSET_Y_END
+    top = pixel_base_y + SHI_Y_START
+    bottom = pixel_base_y + SHI_Y_END
     
     width, height = img.size
-    left, right = max(0, min(X_START, width)), max(0, min(X_END, width))
+    left, right = max(0, min(SHI_X_START, width)), max(0, min(SHI_X_END, width))
     top, bottom = max(0, min(top, height)), max(0, min(bottom, height))
     
     gray_pixel_count = 0
@@ -130,8 +137,6 @@ def reset_to_main_screen(d):
 def extract_timeframe_data(d, tf_name, worker_name, calc_score=True):
     target = d(text=tf_name)
     
-    # 🎯 核心修复：彻底删除了导致呼出十字光标的 (450, 350) 盲点代码
-    # 找不到就直接返回 False，让外层的 3 次重试机制去处理
     if not target.wait(timeout=5.0):
         return False, None
             
@@ -169,19 +174,23 @@ def extract_timeframe_data(d, tf_name, worker_name, calc_score=True):
 
     best_score, best_tier = 0, "无评级"
     
-    if calc_score and (last_red_x != -1 or last_green_x != -1):
-        right = 755
-        top, bottom = base_bottom + BOX_TOP_OFFSET, base_bottom + BOX_BOTTOM_OFFSET
-        if last_red_x != -1 and (left_red := max(0, last_red_x - 5)) < right:
-            score_r, tier_r = analyze_sideways_score(img.crop((left_red, top, right, bottom)))
-            if score_r > best_score: best_score, best_tier = score_r, tier_r
-        if last_green_x != -1 and (left_green := max(0, last_green_x - 5)) < right:
-            score_g, tier_g = analyze_sideways_score(img.crop((left_green, top, right, bottom)))
-            if score_g > best_score: best_score, best_tier = score_g, tier_g
+    # 🎯 核心修改 2：采用绝对优先级的箱体边界判定，红柱优先，绿柱兜底
+    if calc_score:
+        box_top = int(base_bottom + BOX_TOP_OFFSET)
+        box_bottom = int(base_bottom + BOX_BOTTOM_OFFSET)
+        
+        target_left_x = -1
+        if last_red_x != -1:
+            target_left_x = max(0, last_red_x - 5)
+        elif last_green_x != -1:
+            target_left_x = max(0, last_green_x - 5)
+            
+        if target_left_x != -1 and target_left_x < BOX_X_END:
+            best_score, best_tier = analyze_sideways_score(img.crop((target_left_x, box_top, BOX_X_END, box_bottom)))
 
     result = {
         "shi": has_shi, "score": best_score, "tier": best_tier, 
-        "seq_file": seq_file, "seq_arr": data_array, "seq_term": terminal
+        "seq_file": seq_file, "seq_arr": data_array, "seq_term": seq_terminal
     }
     return True, result
 
