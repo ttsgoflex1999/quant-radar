@@ -37,7 +37,7 @@ SHI_Y_END = 1150
 # 📍 3. 横盘评分大框参数 (Y轴基于日K按钮偏移)
 BOX_TOP_OFFSET = 130           
 BOX_BOTTOM_OFFSET = 650        
-BOX_X_END = 770              # 👈 核心修改 1：提取评分大框的右侧固定边界
+BOX_X_END = 770              
 AMP_MAX_TOLERANCE = 0.30   
 DRIFT_MAX_TOLERANCE = 0.20 
 
@@ -128,12 +128,6 @@ def analyze_sideways_score(img):
     return final_score, tier
 
 # ================= 3. 核心工具包 =================
-def reset_to_main_screen(d):
-    d.click(75, 112)
-    time.sleep(1.0)
-    d.click(75, 112)
-    time.sleep(1.5)
-
 def extract_timeframe_data(d, tf_name, worker_name, calc_score=True):
     target = d(text=tf_name)
     
@@ -141,7 +135,9 @@ def extract_timeframe_data(d, tf_name, worker_name, calc_score=True):
         return False, None
             
     target.click()
-    time.sleep(2.0) 
+    
+    # 🎯 严格执行指令：点击周期后，仅延时 1.0 秒！
+    time.sleep(1.0) 
 
     img = d.screenshot(format='pillow').convert('RGB')
     info = d.info
@@ -174,7 +170,6 @@ def extract_timeframe_data(d, tf_name, worker_name, calc_score=True):
 
     best_score, best_tier = 0, "无评级"
     
-    # 🎯 核心修改 2：采用绝对优先级的箱体边界判定，红柱优先，绿柱兜底
     if calc_score:
         box_top = int(base_bottom + BOX_TOP_OFFSET)
         box_bottom = int(base_bottom + BOX_BOTTOM_OFFSET)
@@ -246,39 +241,52 @@ def worker(device_id, task_queue, worker_name):
                 task_queue.task_done()
                 continue
 
-        retry_tag = f"(第{retry_count + 1}次尝试)" if retry_count > 0 else ""
+        retry_tag = f"(K线重试第{retry_count}次)" if retry_count > 0 else ""
         print(f"\n▶️ [{worker_name}] 锁定板块: [{stock_code}] {stock_name} {retry_tag}")
 
         try:
-            if retry_count > 0: 
-                reset_to_main_screen(d)
-            
-            d.click(POS_SEARCH[0], POS_SEARCH[1])
-            time.sleep(1.0) 
-
             input_success = False
-            for _ in range(3):
+            for search_attempt in range(2): 
+                
+                # 直接点击顶部全局搜索栏
+                d.click(POS_SEARCH[0], POS_SEARCH[1])
+                time.sleep(1.0) 
+
                 search_box = d(className="android.widget.EditText")
                 if not search_box.wait(timeout=3.0): 
                     d.click(POS_SEARCH[0], POS_SEARCH[1])
                     time.sleep(1.0)
-                    continue 
-                    
-                search_box.set_text(stock_code)
-                time.sleep(1.2) 
+                    if not search_box.exists:
+                        continue 
                 
-                if d(textContains="机构拆单策略").exists: 
-                    continue  
-                else:
+                search_box.clear_text()
+                search_box.set_text(stock_code)
+                time.sleep(1.5) 
+                
+                d.click(POS_RESULT[0], POS_RESULT[1])
+                time.sleep(1.0)
+                
+                if d(text="日K").exists:
                     input_success = True
-                    break  
-            
+                    break
+                    
+                print(f"  ⏳ [{worker_name}] 搜索结果卡顿，执行二次精准补点...")
+                d.click(POS_RESULT[0], POS_RESULT[1])
+                
+                if d(text="日K").wait(timeout=3.0):
+                    input_success = True
+                    break
+                    
+                print(f"  ⚠️ [{worker_name}] 依然卡顿，准备清除搜索框重试...")
+
             if not input_success: 
-                raise Exception("遭遇严重遮挡或搜索框持续丢失")
+                print(f"  ❌ [{worker_name}] 搜索完全失败，直接转到下一个板块！")
+                empty_res = {"shi": False, "score": 0, "tier": "搜索失败", "seq_file": "", "seq_arr": [], "seq_term": ""}
+                save_comprehensive_result(stock_code, stock_name, empty_res, empty_res, empty_res)
+                task_queue.task_done()
+                continue 
 
-            d.click(POS_RESULT[0], POS_RESULT[1])
-            time.sleep(1.5) 
-
+            # ============= 正常提取数据 =============
             results = {}
             for tf in ["日K", "周K", "月K"]:
                 success, res = extract_timeframe_data(d, tf, worker_name, calc_score=(tf == "日K"))
@@ -291,21 +299,21 @@ def worker(device_id, task_queue, worker_name):
             saved = save_comprehensive_result(stock_code, stock_name, results["日K"], results["周K"], results["月K"])
             if not saved:
                 print(f"  ⚠️ [{worker_name}] 板块 {stock_code} 此前已被记录，跳过写入。")
+            
             task_queue.task_done()
             
         except Exception as e:
-            print(f"  ⚠️ [{worker_name}] 板块 {stock_code} 异常: {e}")
+            print(f"  ⚠️ [{worker_name}] 板块 {stock_code} K线异常: {e}")
             
             if retry_count < 3:
                 task['重试次数'] += 1
                 print(f"  🔄 [{worker_name}] 将板块 {stock_code} 重新推入队列 (已用机会: {task['重试次数']}/3)...")
                 task_queue.put(task)
             else:
-                print(f"  ❌ [{worker_name}] 板块 {stock_code} 连续 3 次检测失败，已达最大重试上限，放弃并保底记录！")
-                empty_res = {"shi": False, "score": 0, "tier": "检测失败", "seq_file": "", "seq_arr": [], "seq_term": ""}
+                print(f"  ❌ [{worker_name}] 板块 {stock_code} 连续 3 次提取失败，放弃并保底记录！")
+                empty_res = {"shi": False, "score": 0, "tier": "提取失败", "seq_file": "", "seq_arr": [], "seq_term": ""}
                 save_comprehensive_result(stock_code, stock_name, empty_res, empty_res, empty_res)
 
-            reset_to_main_screen(d) 
             task_queue.task_done()
 
 # ================= 5. 🚀 司令部总调度大厅 =================
