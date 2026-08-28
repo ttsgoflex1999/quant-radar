@@ -142,7 +142,9 @@ def extract_timeframe_data(d, tf_name, worker_name, device_id, calc_score=True):
         return False, None
 
     target.click()
-    time.sleep(1.0) 
+    
+    # 🎯 延时 2.0 秒，确保指标与 K 线画面完全加载完毕
+    time.sleep(2.0) 
 
     img = d.screenshot(format='pillow').convert('RGB')
     info = d.info
@@ -305,7 +307,6 @@ def worker(device_id, task_queue, worker_name):
             # ============= 正常提取数据 =============
             results = {}
             for tf in ["日K", "周K", "月K"]:
-                # 🎯 传入 device_id，让提取函数知道该用哪套参数！
                 success, res = extract_timeframe_data(d, tf, worker_name, device_id, calc_score=(tf == "日K"))
                 if not success: 
                     raise Exception(f"{tf} 加载失败")
