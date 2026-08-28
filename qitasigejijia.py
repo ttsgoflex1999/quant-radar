@@ -2,7 +2,7 @@ import uiautomator2 as u2
 from PIL import ImageDraw
 
 # ================= 诊断配置 =================
-DEVICE_IP = "127.0.0.1:16448"  # 用一号机做测试
+DEVICE_IP = "127.0.0.1:16384"  # 用一号机做测试
 
 # 📍 1. 红绿柱检测参数 (Y轴基于日K按钮偏移)
 OFFSET_Y = 850           
