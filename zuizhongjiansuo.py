@@ -22,24 +22,19 @@ END_INDEX = 5000
 POS_SEARCH = (1016, 115)  
 POS_RESULT = (450, 250)   
 
-# 📍 1. 红绿柱检测参数 (🎯 核心修复：必须分三周期独立配置！)
-# 你用诊断脚本量出日K和月K的偏移后，填在这里：
-OFFSET_Y_DICT = {
-    "日K": 932,  # 👈 日K的红绿柱扫描高度偏移
-    "周K": 932,  # 👈 周K的红绿柱扫描高度偏移 (你已知 932 是完美的)
-    "月K": 932   # 👈 月K的红绿柱扫描高度偏移
-}
+# 📍 1. 红绿柱检测参数
+OFFSET_Y = 932              
 VALIDATOR_OFFSET_Y = 300  
 SCAN_X_START = 10
 SCAN_X_END = 755
 
-# 📍 2. 始字检测参数 (Y轴基于日K按钮偏移，X轴绝对位置)
+# 📍 2. 始字检测参数
 SHI_X_START = 730
 SHI_X_END = 770
 SHI_Y_START = 1120
 SHI_Y_END = 1150
 
-# 📍 3. 横盘评分大框参数 (Y轴基于日K按钮偏移)
+# 📍 3. 横盘评分大框参数
 BOX_TOP_OFFSET = 130           
 BOX_BOTTOM_OFFSET = 650        
 BOX_X_END = 770              
@@ -139,22 +134,25 @@ def extract_timeframe_data(d, tf_name, worker_name, calc_score=True):
         return False, None
 
     target.click()
-    # 严格 1.0 秒等待加载指标
     time.sleep(1.0) 
 
     img = d.screenshot(format='pillow').convert('RGB')
     info = d.info
     scale_y = img.size[1] / info['displayHeight']
-    base_bottom = target.info['bounds']['bottom']
+    
+    # 🎯 核心锚点修复：无论当前点的是什么周期，统统抓取未选中的"日K"做绝对尺子！
+    # 彻底杜绝选中的按钮因长出下划线而造成的像素位移！
+    anchor = d(text="日K")
+    if anchor.exists:
+        base_bottom = anchor.info['bounds']['bottom']
+    else:
+        base_bottom = target.info['bounds']['bottom'] # 极度异常时的后备方案
 
     pixel_base_y_shi = int(base_bottom * scale_y)
     has_shi = detect_shi_character_fast(img, pixel_base_y_shi)
 
     validator_y = int(max(10, min(base_bottom + VALIDATOR_OFFSET_Y, 1900)))
-    
-    # 🎯 核心修复：根据目前处于日K/周K/月K，调用专属高度参数！
-    current_offset_y = OFFSET_Y_DICT.get(tf_name, 932)
-    target_y = int(max(10, min(base_bottom + current_offset_y, 1900)))
+    target_y = int(max(10, min(base_bottom + OFFSET_Y, 1900)))
 
     canvas_loaded = any(abs(img.getpixel((x, validator_y))[0] - img.getpixel((x, validator_y))[1]) > 20 for x in range(SCAN_X_START, SCAN_X_END + 1, 10))
     if not canvas_loaded: return False, None
@@ -299,16 +297,11 @@ def worker(device_id, task_queue, worker_name):
                     raise Exception(f"{tf} 加载失败")
                 results[tf] = res
                 
-                # 🎯 核心新增：带彩色红绿方块的超级控制台输出
+                # 🎯 核心输出修复：彻底删除省略号截断，完整输出彩色长龙！
                 shi_icon = "🔴有" if res['shi'] else "➖无"
                 score_str = f"| 评分: {res['score']:>4} " if tf == "日K" else ""
                 
-                # 截取最后 80 个字符，防止终端被刷屏太乱，足以让你看清最近异动
-                visual_seq = res['seq_term']
-                if len(visual_seq) > 400: # 颜色代码带格式字符较长
-                    visual_seq = "..." + visual_seq[-350:] 
-                    
-                print(f"  📺 [{worker_name}] {tf} | 始字:{shi_icon} {score_str}\n      扫描结果: [{visual_seq}]")
+                print(f"  📺 [{worker_name}] {tf} | 始字:{shi_icon} {score_str}\n      扫描结果: [{res['seq_term']}]")
 
             saved = save_comprehensive_result(stock_code, stock_name, results["日K"], results["周K"], results["月K"])
             if not saved:
