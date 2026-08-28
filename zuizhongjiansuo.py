@@ -22,8 +22,13 @@ END_INDEX = 5000
 POS_SEARCH = (1016, 115)  
 POS_RESULT = (450, 250)   
 
-# 📍 1. 红绿柱检测参数 (Y轴基于日K按钮偏移)
-OFFSET_Y = 932              
+# 📍 1. 红绿柱检测参数 (🎯 核心修复：必须分三周期独立配置！)
+# 你用诊断脚本量出日K和月K的偏移后，填在这里：
+OFFSET_Y_DICT = {
+    "日K": 932,  # 👈 日K的红绿柱扫描高度偏移
+    "周K": 932,  # 👈 周K的红绿柱扫描高度偏移 (你已知 932 是完美的)
+    "月K": 932   # 👈 月K的红绿柱扫描高度偏移
+}
 VALIDATOR_OFFSET_Y = 300  
 SCAN_X_START = 10
 SCAN_X_END = 755
@@ -51,7 +56,6 @@ file_lock = threading.Lock()
 global_completed_count = 0 
 count_lock = threading.Lock()
 
-# 🎯 全局已完成代码集合（防止重复记录）
 completed_stocks_set = set()
 set_lock = threading.Lock()
 
@@ -82,11 +86,11 @@ def command_listener():
 def detect_shi_character_fast(img, pixel_base_y):
     top = pixel_base_y + SHI_Y_START
     bottom = pixel_base_y + SHI_Y_END
-    
+
     width, height = img.size
     left, right = max(0, min(SHI_X_START, width)), max(0, min(SHI_X_END, width))
     top, bottom = max(0, min(top, height)), max(0, min(bottom, height))
-    
+
     gray_pixel_count = 0
     for x in range(left, right):
         for y in range(top, bottom):
@@ -94,7 +98,7 @@ def detect_shi_character_fast(img, pixel_base_y):
             if (50 < r < 170) and (50 < g < 170) and (50 < b < 170):
                 if abs(r - g) < 25 and abs(r - b) < 25 and abs(g - b) < 25:
                     gray_pixel_count += 1
-                
+
     return gray_pixel_count > 12
 
 def analyze_sideways_score(img):
@@ -130,13 +134,12 @@ def analyze_sideways_score(img):
 # ================= 3. 核心工具包 =================
 def extract_timeframe_data(d, tf_name, worker_name, calc_score=True):
     target = d(text=tf_name)
-    
+
     if not target.wait(timeout=5.0):
         return False, None
-            
+
     target.click()
-    
-    # 🎯 严格执行指令：点击周期后，仅延时 1.0 秒！
+    # 严格 1.0 秒等待加载指标
     time.sleep(1.0) 
 
     img = d.screenshot(format='pillow').convert('RGB')
@@ -146,16 +149,19 @@ def extract_timeframe_data(d, tf_name, worker_name, calc_score=True):
 
     pixel_base_y_shi = int(base_bottom * scale_y)
     has_shi = detect_shi_character_fast(img, pixel_base_y_shi)
-    
+
     validator_y = int(max(10, min(base_bottom + VALIDATOR_OFFSET_Y, 1900)))
-    target_y = int(max(10, min(base_bottom + OFFSET_Y, 1900)))
     
+    # 🎯 核心修复：根据目前处于日K/周K/月K，调用专属高度参数！
+    current_offset_y = OFFSET_Y_DICT.get(tf_name, 932)
+    target_y = int(max(10, min(base_bottom + current_offset_y, 1900)))
+
     canvas_loaded = any(abs(img.getpixel((x, validator_y))[0] - img.getpixel((x, validator_y))[1]) > 20 for x in range(SCAN_X_START, SCAN_X_END + 1, 10))
     if not canvas_loaded: return False, None
 
     seq_terminal, seq_file, data_array = "", "", []
     last_red_x, last_green_x = -1, -1
-    
+
     for x in range(SCAN_X_START, SCAN_X_END + 1, 2):
         r, g, b = img.getpixel((x, target_y))
         if r > 180 and g < 100 and b < 100:
@@ -169,17 +175,17 @@ def extract_timeframe_data(d, tf_name, worker_name, calc_score=True):
             data_array.append(0)
 
     best_score, best_tier = 0, "无评级"
-    
+
     if calc_score:
         box_top = int(base_bottom + BOX_TOP_OFFSET)
         box_bottom = int(base_bottom + BOX_BOTTOM_OFFSET)
-        
+
         target_left_x = -1
         if last_red_x != -1:
             target_left_x = max(0, last_red_x - 5)
         elif last_green_x != -1:
             target_left_x = max(0, last_green_x - 5)
-            
+
         if target_left_x != -1 and target_left_x < BOX_X_END:
             best_score, best_tier = analyze_sideways_score(img.crop((target_left_x, box_top, BOX_X_END, box_bottom)))
 
@@ -192,26 +198,26 @@ def extract_timeframe_data(d, tf_name, worker_name, calc_score=True):
 def save_comprehensive_result(code, name, d_res, w_res, m_res):
     global global_completed_count
     current_time = time.strftime("%H:%M:%S", time.localtime())
-    
+
     with set_lock:
         if code in completed_stocks_set:
             return False
         completed_stocks_set.add(code)
-    
+
     with file_lock: 
         if not os.path.exists(OUTPUT_CSV):
             with open(OUTPUT_CSV, "w", encoding="utf-8") as f:
                 f.write('时间,代码,名称,日K始字,日K得分,日K定级,日K序列,周K始字,周K序列,月K始字,月K序列\n')
-            
+
         with open(OUTPUT_CSV, "a", encoding="utf-8") as f:
             f.write(f"{current_time},{code},{name},"
                     f"{d_res['shi']},{d_res['score']},{d_res['tier']},\"{','.join(map(str, d_res['seq_arr']))}\","
                     f"{w_res['shi']},\"{','.join(map(str, w_res['seq_arr']))}\","
                     f"{m_res['shi']},\"{','.join(map(str, m_res['seq_arr']))}\"\n")
-        
+
         with open(OUTPUT_TXT, "a", encoding="utf-8") as f:
             f.write(f"[{current_time}] {code} {name} | 日K[{'🔥' if d_res['shi'] else '➖'} {d_res['score']}] | 周K[{'🔥' if w_res['shi'] else '➖'}] | 月K[{'🔥' if m_res['shi'] else '➖'}]\n")
-            
+
     with count_lock:
         global_completed_count += 1
     return True
@@ -227,15 +233,15 @@ def worker(device_id, task_queue, worker_name):
 
     while True:
         pause_event.wait()
-        
+
         try:
             task = task_queue.get(timeout=3)
         except queue.Empty:
             print(f"🎉 {worker_name} 任务空，下班！")
             break
-            
+
         stock_code, stock_name, retry_count = task['代码'], task['名称'], task['重试次数']
-        
+
         with set_lock:
             if stock_code in completed_stocks_set:
                 task_queue.task_done()
@@ -247,8 +253,7 @@ def worker(device_id, task_queue, worker_name):
         try:
             input_success = False
             for search_attempt in range(2): 
-                
-                # 直接点击顶部全局搜索栏
+
                 d.click(POS_SEARCH[0], POS_SEARCH[1])
                 time.sleep(1.0) 
 
@@ -258,25 +263,25 @@ def worker(device_id, task_queue, worker_name):
                     time.sleep(1.0)
                     if not search_box.exists:
                         continue 
-                
+
                 search_box.clear_text()
                 search_box.set_text(stock_code)
                 time.sleep(1.5) 
-                
+
                 d.click(POS_RESULT[0], POS_RESULT[1])
                 time.sleep(1.0)
-                
+
                 if d(text="日K").exists:
                     input_success = True
                     break
-                    
+
                 print(f"  ⏳ [{worker_name}] 搜索结果卡顿，执行二次精准补点...")
                 d.click(POS_RESULT[0], POS_RESULT[1])
-                
+
                 if d(text="日K").wait(timeout=3.0):
                     input_success = True
                     break
-                    
+
                 print(f"  ⚠️ [{worker_name}] 依然卡顿，准备清除搜索框重试...")
 
             if not input_success: 
@@ -293,18 +298,27 @@ def worker(device_id, task_queue, worker_name):
                 if not success: 
                     raise Exception(f"{tf} 加载失败")
                 results[tf] = res
-                score_display = f" | 得分: {res['score']}" if tf == "日K" else ""
-                print(f"  📺 [{worker_name}] {tf} | 始字: {'🔴有' if res['shi'] else '无'}{score_display} | 序列: [{res['seq_term'][:20]}...]")
-            
+                
+                # 🎯 核心新增：带彩色红绿方块的超级控制台输出
+                shi_icon = "🔴有" if res['shi'] else "➖无"
+                score_str = f"| 评分: {res['score']:>4} " if tf == "日K" else ""
+                
+                # 截取最后 80 个字符，防止终端被刷屏太乱，足以让你看清最近异动
+                visual_seq = res['seq_term']
+                if len(visual_seq) > 400: # 颜色代码带格式字符较长
+                    visual_seq = "..." + visual_seq[-350:] 
+                    
+                print(f"  📺 [{worker_name}] {tf} | 始字:{shi_icon} {score_str}\n      扫描结果: [{visual_seq}]")
+
             saved = save_comprehensive_result(stock_code, stock_name, results["日K"], results["周K"], results["月K"])
             if not saved:
                 print(f"  ⚠️ [{worker_name}] 板块 {stock_code} 此前已被记录，跳过写入。")
-            
+
             task_queue.task_done()
-            
+
         except Exception as e:
             print(f"  ⚠️ [{worker_name}] 板块 {stock_code} K线异常: {e}")
-            
+
             if retry_count < 3:
                 task['重试次数'] += 1
                 print(f"  🔄 [{worker_name}] 将板块 {stock_code} 重新推入队列 (已用机会: {task['重试次数']}/3)...")
@@ -322,25 +336,25 @@ def process_and_sync(is_final=True):
         os.system('git add .') 
         tag = "系统终止同步" if is_final else "系统暂停同步"
         os.system(f'git commit -m "🤖 quant-radar {tag}：{time.strftime("%m-%d %H:%M")}"')
-        
+
         push_status = os.system('git push')
         if push_status != 0:
             os.system('git config --global http.version HTTP/1.1')
             os.system('git push')
             os.system('git config --global http.version HTTP/2')
         print(f"  ✅ 云端数据 ({tag}) 已成功推送至网站！")
-        
+
     except Exception as e:
         print(f"\n  ⚠️ 同步异常: {e}")
 
 if __name__ == "__main__":
     print("=== 🚀 开启 quant-radar [板块全维探测] ===")
     print("💡 输入 'p' 回车暂停并上传数据，输入 'r' 回车恢复。")
-    
+
     listener_thread = threading.Thread(target=command_listener)
     listener_thread.daemon = True
     listener_thread.start()
-    
+
     try:
         df = pd.read_csv(INPUT_CSV, dtype=str)
         df = df.dropna(subset=['板块代码']) 
@@ -368,7 +382,7 @@ if __name__ == "__main__":
     for index, row in stock_list.iterrows():
         if row['代码'] not in completed_stocks_set:
             task_queue.put({'代码': row['代码'], '名称': row['名称'], '重试次数': 0})
-    
+
     print(f"🚀 装载待检测板块任务数：{task_queue.qsize()} 个")
 
     threads = []
@@ -388,11 +402,11 @@ if __name__ == "__main__":
             if current_completed - last_sync_count >= 100:
                 process_and_sync(is_final=False)
                 last_sync_count = current_completed
-                
+
     except KeyboardInterrupt:
         print("\n⚠️ 紧急停止！")
         with task_queue.mutex: task_queue.queue.clear()
-            
+
     finally:
         print("🛑 所有机甲已汇报完成，正在执行最终上传...")
         process_and_sync(is_final=True)
