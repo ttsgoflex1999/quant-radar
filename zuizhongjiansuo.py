@@ -22,21 +22,29 @@ END_INDEX = 5000
 POS_SEARCH = (1016, 115)  
 POS_RESULT = (450, 250)   
 
-# 📍 1. 红绿柱检测参数
-OFFSET_Y = 932              
+# 🎯 核心修复：机甲专属视觉配置文件
+# 因为不同模拟器的DPI(像素密度)不同，导致App内控件间距发生物理缩放错位。
+DEVICE_CONFIGS = {
+    # 1号机的专属参数 (DPI或缩放与其他不同)
+    "127.0.0.1:16416": {
+        "OFFSET_Y": {"日K": 932, "周K": 932, "月K": 932},
+        "SHI_Y_START": 1120, "SHI_Y_END": 1150,
+        "BOX_TOP_OFFSET": 130, "BOX_BOTTOM_OFFSET": 650
+    },
+    # 2、3、4、5号机共用的参数
+    "DEFAULT": {
+        "OFFSET_Y": {"日K": 850, "周K": 850, "月K": 850},
+        "SHI_Y_START": 1030, "SHI_Y_END": 1060,
+        "BOX_TOP_OFFSET": 100, "BOX_BOTTOM_OFFSET": 560
+    }
+}
+
+# 全局通用参数 (不受DPI影响的横向参数及容忍度)
 VALIDATOR_OFFSET_Y = 300  
 SCAN_X_START = 10
 SCAN_X_END = 755
-
-# 📍 2. 始字检测参数
 SHI_X_START = 730
 SHI_X_END = 770
-SHI_Y_START = 1120
-SHI_Y_END = 1150
-
-# 📍 3. 横盘评分大框参数
-BOX_TOP_OFFSET = 130           
-BOX_BOTTOM_OFFSET = 650        
 BOX_X_END = 770              
 AMP_MAX_TOLERANCE = 0.30   
 DRIFT_MAX_TOLERANCE = 0.20 
@@ -78,9 +86,9 @@ def command_listener():
             break
 
 # ================= 2. ⚡️ 特征检测引擎 =================
-def detect_shi_character_fast(img, pixel_base_y):
-    top = pixel_base_y + SHI_Y_START
-    bottom = pixel_base_y + SHI_Y_END
+def detect_shi_character_fast(img, pixel_base_y, config):
+    top = pixel_base_y + config["SHI_Y_START"]
+    bottom = pixel_base_y + config["SHI_Y_END"]
 
     width, height = img.size
     left, right = max(0, min(SHI_X_START, width)), max(0, min(SHI_X_END, width))
@@ -127,7 +135,7 @@ def analyze_sideways_score(img):
     return final_score, tier
 
 # ================= 3. 核心工具包 =================
-def extract_timeframe_data(d, tf_name, worker_name, calc_score=True):
+def extract_timeframe_data(d, tf_name, worker_name, device_id, calc_score=True):
     target = d(text=tf_name)
 
     if not target.wait(timeout=5.0):
@@ -140,19 +148,23 @@ def extract_timeframe_data(d, tf_name, worker_name, calc_score=True):
     info = d.info
     scale_y = img.size[1] / info['displayHeight']
     
-    # 🎯 核心锚点修复：无论当前点的是什么周期，统统抓取未选中的"日K"做绝对尺子！
-    # 彻底杜绝选中的按钮因长出下划线而造成的像素位移！
     anchor = d(text="日K")
     if anchor.exists:
         base_bottom = anchor.info['bounds']['bottom']
     else:
-        base_bottom = target.info['bounds']['bottom'] # 极度异常时的后备方案
+        base_bottom = target.info['bounds']['bottom']
+
+    # 🎯 核心机制：获取当前机甲专属配置
+    config = DEVICE_CONFIGS.get(device_id, DEVICE_CONFIGS["DEFAULT"])
 
     pixel_base_y_shi = int(base_bottom * scale_y)
-    has_shi = detect_shi_character_fast(img, pixel_base_y_shi)
+    has_shi = detect_shi_character_fast(img, pixel_base_y_shi, config)
 
     validator_y = int(max(10, min(base_bottom + VALIDATOR_OFFSET_Y, 1900)))
-    target_y = int(max(10, min(base_bottom + OFFSET_Y, 1900)))
+    
+    # 🎯 读取专属的红绿柱扫描偏移
+    current_offset_y = config["OFFSET_Y"].get(tf_name, config["OFFSET_Y"]["日K"])
+    target_y = int(max(10, min(base_bottom + current_offset_y, 1900)))
 
     canvas_loaded = any(abs(img.getpixel((x, validator_y))[0] - img.getpixel((x, validator_y))[1]) > 20 for x in range(SCAN_X_START, SCAN_X_END + 1, 10))
     if not canvas_loaded: return False, None
@@ -175,8 +187,9 @@ def extract_timeframe_data(d, tf_name, worker_name, calc_score=True):
     best_score, best_tier = 0, "无评级"
 
     if calc_score:
-        box_top = int(base_bottom + BOX_TOP_OFFSET)
-        box_bottom = int(base_bottom + BOX_BOTTOM_OFFSET)
+        # 🎯 读取专属的横盘大框边界
+        box_top = int(base_bottom + config["BOX_TOP_OFFSET"])
+        box_bottom = int(base_bottom + config["BOX_BOTTOM_OFFSET"])
 
         target_left_x = -1
         if last_red_x != -1:
@@ -292,12 +305,12 @@ def worker(device_id, task_queue, worker_name):
             # ============= 正常提取数据 =============
             results = {}
             for tf in ["日K", "周K", "月K"]:
-                success, res = extract_timeframe_data(d, tf, worker_name, calc_score=(tf == "日K"))
+                # 🎯 传入 device_id，让提取函数知道该用哪套参数！
+                success, res = extract_timeframe_data(d, tf, worker_name, device_id, calc_score=(tf == "日K"))
                 if not success: 
                     raise Exception(f"{tf} 加载失败")
                 results[tf] = res
                 
-                # 🎯 核心输出修复：彻底删除省略号截断，完整输出彩色长龙！
                 shi_icon = "🔴有" if res['shi'] else "➖无"
                 score_str = f"| 评分: {res['score']:>4} " if tf == "日K" else ""
                 
