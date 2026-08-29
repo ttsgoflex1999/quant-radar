@@ -53,7 +53,6 @@ global_completed_count = 0
 count_lock = threading.Lock()
 completed_stocks_set = set()
 
-# 🎯 修复死锁：改用 RLock (可重入锁)，允许同一台机甲多次获取锁而不会卡死自己！
 data_lock = threading.RLock()  
 
 phase_1_data = {}  
@@ -115,8 +114,14 @@ def analyze_sideways_score(img):
 def extract_timeframe_data(d, tf_name, worker_name, device_id, calc_score=True):
     target = d(text=tf_name)
     if not target.wait(timeout=5.0): return False, None
+    
+    # 🎯 破甲机制：暴力双击！防止 App 单次点击被系统吞掉或事件排队假死
     target.click()
-    time.sleep(2.0) 
+    time.sleep(0.5)
+    target.click()
+    
+    # 🎯 等待 3.0 秒：彻底抹平网络加载+重新渲染带来的所有时间差
+    time.sleep(3.0) 
 
     img = d.screenshot(format='pillow').convert('RGB')
     info = d.info
@@ -257,6 +262,13 @@ def worker(device_id, task_queue, worker_name):
             for tf in ["日K", "周K", "月K"]:
                 success, res = extract_timeframe_data(d, tf, worker_name, device_id, calc_score=(tf == "日K"))
                 if not success: raise Exception(f"{tf} 加载失败")
+                
+                # 🎯 升级版【全维防残影屏障】：彻底封杀UI错位！
+                # 将刚拍下的结果，和之前拍的所有周期结果进行比对，若像素级一样，必是残影！
+                for prev_tf, prev_res in results.items():
+                    if res["seq_arr"] == prev_res["seq_arr"] and any(x != 0 for x in res["seq_arr"]):
+                        raise Exception(f"🚨 致命UI延迟发现：【{tf}】截取到了【{prev_tf}】的残影错位数据！强制重查！")
+
                 results[tf] = res
                 shi_icon = "🔴有" if res['shi'] else "➖无"
                 score_str = f"| 评分: {res['score']:>4} " if tf == "日K" else ""
