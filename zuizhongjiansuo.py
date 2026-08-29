@@ -22,24 +22,19 @@ END_INDEX = 5000
 POS_SEARCH = (1016, 115)  
 POS_RESULT = (450, 250)   
 
-# 🎯 核心修复：机甲专属视觉配置文件
-# 因为不同模拟器的DPI(像素密度)不同，导致App内控件间距发生物理缩放错位。
 DEVICE_CONFIGS = {
-    # 1号机的专属参数 (DPI或缩放与其他不同)
     "127.0.0.1:16416": {
         "OFFSET_Y": {"日K": 932, "周K": 932, "月K": 932},
         "SHI_Y_START": 1120, "SHI_Y_END": 1150,
         "BOX_TOP_OFFSET": 130, "BOX_BOTTOM_OFFSET": 650
     },
-    # 2、3、4、5号机共用的参数
     "DEFAULT": {
         "OFFSET_Y": {"日K": 850, "周K": 850, "月K": 850},
-        "SHI_Y_START": 1030, "SHI_Y_END": 1060,
+        "SHI_Y_START": 1020, "SHI_Y_END": 1050,
         "BOX_TOP_OFFSET": 100, "BOX_BOTTOM_OFFSET": 560
     }
 }
 
-# 全局通用参数 (不受DPI影响的横向参数及容忍度)
 VALIDATOR_OFFSET_Y = 300  
 SCAN_X_START = 10
 SCAN_X_END = 755
@@ -52,48 +47,37 @@ DRIFT_MAX_TOLERANCE = 0.20
 INPUT_CSV = "all_boards_ths.csv" 
 OUTPUT_TXT = "板块雷达战报_最新.txt"
 OUTPUT_CSV = "板块全维底层数据_最新.csv"
-FILTERED_CSV = "优质板块重点关注_最新.csv"
 
-# 🔒 线程锁、计数器与防重复记录集合
 file_lock = threading.Lock()
 global_completed_count = 0 
 count_lock = threading.Lock()
-
 completed_stocks_set = set()
-set_lock = threading.Lock()
 
-pause_event = threading.Event()
-pause_event.set()
+# 🎯 修复死锁：改用 RLock (可重入锁)，允许同一台机甲多次获取锁而不会卡死自己！
+data_lock = threading.RLock()  
 
-# ================= 1.5 🕹️ 终端指战员控制台 =================
-def command_listener():
-    while True:
-        try:
-            cmd = input().strip().lower()
-            if cmd == 'p':
-                print("\n" + "="*50)
-                print("⏸️ 【系统暂停】各机甲将在完成当前任务后悬停。")
-                print("⏳ 正在尝试将当前战果强制推送到网站云端...")
-                pause_event.clear()
-                process_and_sync(is_final=False)
-                print("="*50 + "\n")
-            elif cmd == 'r':
-                print("\n" + "="*50)
-                print("▶️ 【系统恢复】机甲解除锁定，继续执行扫描！")
-                print("="*50 + "\n")
-                pause_event.set()   
-        except EOFError:
-            break
+phase_1_data = {}  
+phase_1_hash = {}  
+suspicious_stocks = {}  
+phase_3_votes = {} 
+
+all_phases_completed = False 
 
 # ================= 2. ⚡️ 特征检测引擎 =================
+def get_result_hash(results_dict):
+    h_str = ""
+    for tf in ["日K", "周K", "月K"]:
+        r = results_dict[tf]
+        seq = "".join(map(str, r['seq_arr']))
+        h_str += f"[{tf}:{r['shi']}_{r['score']}_{seq}]"
+    return h_str
+
 def detect_shi_character_fast(img, pixel_base_y, config):
     top = pixel_base_y + config["SHI_Y_START"]
     bottom = pixel_base_y + config["SHI_Y_END"]
-
     width, height = img.size
     left, right = max(0, min(SHI_X_START, width)), max(0, min(SHI_X_END, width))
     top, bottom = max(0, min(top, height)), max(0, min(bottom, height))
-
     gray_pixel_count = 0
     for x in range(left, right):
         for y in range(top, bottom):
@@ -101,7 +85,6 @@ def detect_shi_character_fast(img, pixel_base_y, config):
             if (50 < r < 170) and (50 < g < 170) and (50 < b < 170):
                 if abs(r - g) < 25 and abs(r - b) < 25 and abs(g - b) < 25:
                     gray_pixel_count += 1
-
     return gray_pixel_count > 12
 
 def analyze_sideways_score(img):
@@ -112,24 +95,18 @@ def analyze_sideways_score(img):
             r, g, b = img.getpixel((x, y))
             if (r > 160 and g < 130 and b < 130) or (g > 140 and r < 130 and b < 130):
                 kline_pixels.append((x, y))
-
     if not kline_pixels: return 0, "无K线"
-
     y_coords = sorted([p[1] for p in kline_pixels])
     trim_idx = max(1, int(len(y_coords) * 0.05))
     core_y = y_coords[trim_idx:-trim_idx]
     if not core_y: return 0, "数据匮乏"
-
     core_amplitude = core_y[-1] - core_y[0]
     score_amp = max(0, 60 * (1 - ((core_amplitude / height) / AMP_MAX_TOLERANCE)))
-
     left_y = [p[1] for p in kline_pixels if p[0] < width * 0.3]
     right_y = [p[1] for p in kline_pixels if p[0] > width * 0.7]
     if not left_y or not right_y: return 0, "走势过短"
-
     gravity_drift = abs(sorted(left_y)[len(left_y)//2] - sorted(right_y)[len(right_y)//2])
     score_drift = max(0, 40 * (1 - ((gravity_drift / height) / DRIFT_MAX_TOLERANCE)))
-
     final_score = round(score_amp + score_drift, 1)
     tier = "[S级]极品横盘" if final_score >= 85 else "[A级]标准箱体" if final_score >= 60 else "[B级]宽幅震荡" if final_score >= 40 else "[C级]非横盘"
     return final_score, tier
@@ -137,13 +114,8 @@ def analyze_sideways_score(img):
 # ================= 3. 核心工具包 =================
 def extract_timeframe_data(d, tf_name, worker_name, device_id, calc_score=True):
     target = d(text=tf_name)
-
-    if not target.wait(timeout=5.0):
-        return False, None
-
+    if not target.wait(timeout=5.0): return False, None
     target.click()
-    
-    # 🎯 延时 2.0 秒，确保指标与 K 线画面完全加载完毕
     time.sleep(2.0) 
 
     img = d.screenshot(format='pillow').convert('RGB')
@@ -151,20 +123,12 @@ def extract_timeframe_data(d, tf_name, worker_name, device_id, calc_score=True):
     scale_y = img.size[1] / info['displayHeight']
     
     anchor = d(text="日K")
-    if anchor.exists:
-        base_bottom = anchor.info['bounds']['bottom']
-    else:
-        base_bottom = target.info['bounds']['bottom']
-
-    # 🎯 核心机制：获取当前机甲专属配置
+    base_bottom = anchor.info['bounds']['bottom'] if anchor.exists else target.info['bounds']['bottom']
     config = DEVICE_CONFIGS.get(device_id, DEVICE_CONFIGS["DEFAULT"])
 
     pixel_base_y_shi = int(base_bottom * scale_y)
     has_shi = detect_shi_character_fast(img, pixel_base_y_shi, config)
-
     validator_y = int(max(10, min(base_bottom + VALIDATOR_OFFSET_Y, 1900)))
-    
-    # 🎯 读取专属的红绿柱扫描偏移
     current_offset_y = config["OFFSET_Y"].get(tf_name, config["OFFSET_Y"]["日K"])
     target_y = int(max(10, min(base_bottom + current_offset_y, 1900)))
 
@@ -187,18 +151,12 @@ def extract_timeframe_data(d, tf_name, worker_name, device_id, calc_score=True):
             data_array.append(0)
 
     best_score, best_tier = 0, "无评级"
-
     if calc_score:
-        # 🎯 读取专属的横盘大框边界
         box_top = int(base_bottom + config["BOX_TOP_OFFSET"])
         box_bottom = int(base_bottom + config["BOX_BOTTOM_OFFSET"])
-
         target_left_x = -1
-        if last_red_x != -1:
-            target_left_x = max(0, last_red_x - 5)
-        elif last_green_x != -1:
-            target_left_x = max(0, last_green_x - 5)
-
+        if last_red_x != -1: target_left_x = max(0, last_red_x - 5)
+        elif last_green_x != -1: target_left_x = max(0, last_green_x - 5)
         if target_left_x != -1 and target_left_x < BOX_X_END:
             best_score, best_tier = analyze_sideways_score(img.crop((target_left_x, box_top, BOX_X_END, box_bottom)))
 
@@ -211,32 +169,30 @@ def extract_timeframe_data(d, tf_name, worker_name, device_id, calc_score=True):
 def save_comprehensive_result(code, name, d_res, w_res, m_res):
     global global_completed_count
     current_time = time.strftime("%H:%M:%S", time.localtime())
-
-    with set_lock:
-        if code in completed_stocks_set:
-            return False
+    
+    with data_lock:
+        if code in completed_stocks_set: return False
         completed_stocks_set.add(code)
 
     with file_lock: 
         if not os.path.exists(OUTPUT_CSV):
             with open(OUTPUT_CSV, "w", encoding="utf-8") as f:
                 f.write('时间,代码,名称,日K始字,日K得分,日K定级,日K序列,周K始字,周K序列,月K始字,月K序列\n')
-
         with open(OUTPUT_CSV, "a", encoding="utf-8") as f:
             f.write(f"{current_time},{code},{name},"
                     f"{d_res['shi']},{d_res['score']},{d_res['tier']},\"{','.join(map(str, d_res['seq_arr']))}\","
                     f"{w_res['shi']},\"{','.join(map(str, w_res['seq_arr']))}\","
                     f"{m_res['shi']},\"{','.join(map(str, m_res['seq_arr']))}\"\n")
-
         with open(OUTPUT_TXT, "a", encoding="utf-8") as f:
             f.write(f"[{current_time}] {code} {name} | 日K[{'🔥' if d_res['shi'] else '➖'} {d_res['score']}] | 周K[{'🔥' if w_res['shi'] else '➖'}] | 月K[{'🔥' if m_res['shi'] else '➖'}]\n")
-
+            
     with count_lock:
         global_completed_count += 1
     return True
 
 # ================= 4. 🤖 打工人线程逻辑 (Worker) =================
 def worker(device_id, task_queue, worker_name):
+    global all_phases_completed
     try:
         d = u2.connect(device_id)
         print(f"✅ {worker_name} ({device_id}) 神经直连成功！")
@@ -245,125 +201,125 @@ def worker(device_id, task_queue, worker_name):
         return
 
     while True:
-        pause_event.wait()
-
-        try:
-            task = task_queue.get(timeout=3)
-        except queue.Empty:
-            print(f"🎉 {worker_name} 任务空，下班！")
+        if all_phases_completed: 
             break
+            
+        try:
+            task = task_queue.get(timeout=2)
+        except queue.Empty:
+            continue
 
-        stock_code, stock_name, retry_count = task['代码'], task['名称'], task['重试次数']
+        stock_code = task['代码']
+        stock_name = task['名称']
+        retry_count = task['重试次数']
+        current_phase = task['phase']
 
-        with set_lock:
+        with data_lock:
             if stock_code in completed_stocks_set:
                 task_queue.task_done()
                 continue
 
-        retry_tag = f"(K线重试第{retry_count}次)" if retry_count > 0 else ""
-        print(f"\n▶️ [{worker_name}] 锁定板块: [{stock_code}] {stock_name} {retry_tag}")
+        phase_tag = f"[阶段{current_phase}]"
+        retry_tag = f"(重试第{retry_count}次)" if retry_count > 0 else ""
+        print(f"\n▶️ [{worker_name}] {phase_tag} 锁定板块: [{stock_code}] {stock_name} {retry_tag}")
 
         try:
             input_success = False
             for search_attempt in range(2): 
-
                 d.click(POS_SEARCH[0], POS_SEARCH[1])
                 time.sleep(1.0) 
-
                 search_box = d(className="android.widget.EditText")
                 if not search_box.wait(timeout=3.0): 
                     d.click(POS_SEARCH[0], POS_SEARCH[1])
                     time.sleep(1.0)
-                    if not search_box.exists:
-                        continue 
-
+                    if not search_box.exists: continue 
+                
                 search_box.clear_text()
                 search_box.set_text(stock_code)
                 time.sleep(1.5) 
-
                 d.click(POS_RESULT[0], POS_RESULT[1])
                 time.sleep(1.0)
-
+                
                 if d(text="日K").exists:
                     input_success = True
                     break
-
-                print(f"  ⏳ [{worker_name}] 搜索结果卡顿，执行二次精准补点...")
+                print(f"  ⏳ [{worker_name}] 结果卡顿，二次补点...")
                 d.click(POS_RESULT[0], POS_RESULT[1])
-
                 if d(text="日K").wait(timeout=3.0):
                     input_success = True
                     break
 
-                print(f"  ⚠️ [{worker_name}] 依然卡顿，准备清除搜索框重试...")
-
             if not input_success: 
-                print(f"  ❌ [{worker_name}] 搜索完全失败，直接转到下一个板块！")
-                empty_res = {"shi": False, "score": 0, "tier": "搜索失败", "seq_file": "", "seq_arr": [], "seq_term": ""}
-                save_comprehensive_result(stock_code, stock_name, empty_res, empty_res, empty_res)
-                task_queue.task_done()
-                continue 
+                raise Exception("搜索完全失败")
 
             # ============= 正常提取数据 =============
             results = {}
             for tf in ["日K", "周K", "月K"]:
                 success, res = extract_timeframe_data(d, tf, worker_name, device_id, calc_score=(tf == "日K"))
-                if not success: 
-                    raise Exception(f"{tf} 加载失败")
+                if not success: raise Exception(f"{tf} 加载失败")
                 results[tf] = res
-                
                 shi_icon = "🔴有" if res['shi'] else "➖无"
                 score_str = f"| 评分: {res['score']:>4} " if tf == "日K" else ""
-                
-                print(f"  📺 [{worker_name}] {tf} | 始字:{shi_icon} {score_str}\n      扫描结果: [{res['seq_term']}]")
-
-            saved = save_comprehensive_result(stock_code, stock_name, results["日K"], results["周K"], results["月K"])
-            if not saved:
-                print(f"  ⚠️ [{worker_name}] 板块 {stock_code} 此前已被记录，跳过写入。")
-
-            task_queue.task_done()
-
+                print(f"  📺 [{worker_name}] {tf} | 始字:{shi_icon} {score_str}\n      扫描: [{res['seq_term']}]")
+            
         except Exception as e:
-            print(f"  ⚠️ [{worker_name}] 板块 {stock_code} K线异常: {e}")
-
+            print(f"  ⚠️ [{worker_name}] 板块 {stock_code} 提取异常: {e}")
             if retry_count < 3:
                 task['重试次数'] += 1
-                print(f"  🔄 [{worker_name}] 将板块 {stock_code} 重新推入队列 (已用机会: {task['重试次数']}/3)...")
                 task_queue.put(task)
+                task_queue.task_done()
+                continue
             else:
-                print(f"  ❌ [{worker_name}] 板块 {stock_code} 连续 3 次提取失败，放弃并保底记录！")
+                print(f"  ❌ [{worker_name}] 板块 {stock_code} 连续3次失败，使用保底空数据！")
                 empty_res = {"shi": False, "score": 0, "tier": "提取失败", "seq_file": "", "seq_arr": [], "seq_term": ""}
-                save_comprehensive_result(stock_code, stock_name, empty_res, empty_res, empty_res)
+                results = {"日K": empty_res, "周K": empty_res, "月K": empty_res}
 
-            task_queue.task_done()
+        # ================= 5. 🎯 多阶段校验逻辑 =================
+        res_hash = get_result_hash(results)
+        
+        with data_lock:
+            if current_phase == 1:
+                phase_1_data[stock_code] = results
+                phase_1_hash[stock_code] = res_hash
+            
+            elif current_phase == 2:
+                p1_hash = phase_1_hash.get(stock_code)
+                if res_hash == p1_hash:
+                    print(f"  🛡️ [{worker_name}] 板块 {stock_code} 双重校验完美匹配！落库归档。")
+                    save_comprehensive_result(stock_code, stock_name, results["日K"], results["周K"], results["月K"])
+                else:
+                    print(f"  🚨 [{worker_name}] 板块 {stock_code} 一二审出现分歧！打入黑名单，等待联合表决。")
+                    suspicious_stocks[stock_code] = stock_name
+                    phase_3_votes[stock_code] = [phase_1_data[stock_code], results]
+            
+            elif current_phase == 3:
+                print(f"  📥 [{worker_name}] 已为分歧板块 {stock_code} 投出一票。")
+                phase_3_votes[stock_code].append(results)
 
-# ================= 5. 🚀 司令部总调度大厅 =================
-def process_and_sync(is_final=True):
+        task_queue.task_done()
+
+# ================= 6. 🚀 司令部总调度大厅 =================
+def process_and_sync():
     try:
         os.system('git add .') 
-        tag = "系统终止同步" if is_final else "系统暂停同步"
-        os.system(f'git commit -m "🤖 quant-radar {tag}：{time.strftime("%m-%d %H:%M")}"')
-
-        push_status = os.system('git push')
-        if push_status != 0:
-            os.system('git config --global http.version HTTP/1.1')
-            os.system('git push')
-            os.system('git config --global http.version HTTP/2')
-        print(f"  ✅ 云端数据 ({tag}) 已成功推送至网站！")
-
+        os.system(f'git commit -m "🤖 quant-radar 自动战报同步：{time.strftime("%m-%d %H:%M")}"')
+        os.system('git push')
+        print("  ✅ 云端数据已成功推送至网站！")
     except Exception as e:
-        print(f"\n  ⚠️ 同步异常: {e}")
+        pass
+
+def wait_for_queue(tq):
+    while tq.unfinished_tasks > 0:
+        time.sleep(2)
 
 if __name__ == "__main__":
-    print("=== 🚀 开启 quant-radar [板块全维探测] ===")
-    print("💡 输入 'p' 回车暂停并上传数据，输入 'r' 回车恢复。")
-
-    listener_thread = threading.Thread(target=command_listener)
-    listener_thread.daemon = True
-    listener_thread.start()
-
+    print("=== 🚀 开启 quant-radar [增强型双重校验与表决架构] ===")
+    
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    input_file = os.path.join(BASE_DIR, INPUT_CSV)
+    
     try:
-        df = pd.read_csv(INPUT_CSV, dtype=str)
+        df = pd.read_csv(input_file, dtype=str)
         df = df.dropna(subset=['板块代码']) 
         df['代码'] = df['板块代码'].astype(str).str.zfill(6)
         df['名称'] = df['板块名称'].astype(str)
@@ -371,27 +327,28 @@ if __name__ == "__main__":
         print(f"❌ 读取CSV失败: {e}")
         exit()
 
-    if os.path.exists(OUTPUT_CSV):
+    output_file = os.path.join(BASE_DIR, OUTPUT_CSV)
+    if os.path.exists(output_file):
         try:
-            existing_df = pd.read_csv(OUTPUT_CSV, dtype=str)
+            existing_df = pd.read_csv(output_file, dtype=str)
             if '代码' in existing_df.columns:
                 completed_stocks_set.update(existing_df['代码'].str.zfill(6).tolist())
-                print(f"📦 已载入历史检测记录：{len(completed_stocks_set)} 个板块（自动避免重复写入）")
+                print(f"📦 已载入历史检测记录：{len(completed_stocks_set)} 个板块（自动跳过）")
         except Exception:
             pass
     else:
-        with open(OUTPUT_CSV, "w", encoding="utf-8") as f:
+        with open(output_file, "w", encoding="utf-8") as f:
             f.write('时间,代码,名称,日K始字,日K得分,日K定级,日K序列,周K始字,周K序列,月K始字,月K序列\n')
 
     stock_list = df.iloc[START_INDEX:min(END_INDEX, len(df))]
+    pending_stocks = [row for idx, row in stock_list.iterrows() if row['代码'] not in completed_stocks_set]
+    
+    if not pending_stocks:
+        print("🎉 所有板块均已检测完毕，系统退出。")
+        exit()
 
     task_queue = queue.Queue()
-    for index, row in stock_list.iterrows():
-        if row['代码'] not in completed_stocks_set:
-            task_queue.put({'代码': row['代码'], '名称': row['名称'], '重试次数': 0})
-
-    print(f"🚀 装载待检测板块任务数：{task_queue.qsize()} 个")
-
+    
     threads = []
     for i, device_id in enumerate(DEVICE_LIST):
         worker_name = f"🤖机甲-{i+1}号"
@@ -401,20 +358,56 @@ if __name__ == "__main__":
         threads.append(t)
         time.sleep(1) 
 
-    last_sync_count = 0
     try:
-        while task_queue.unfinished_tasks > 0:
-            time.sleep(2)
-            with count_lock: current_completed = global_completed_count
-            if current_completed - last_sync_count >= 100:
-                process_and_sync(is_final=False)
-                last_sync_count = current_completed
+        # ================= 阶段一：初次扫描 =================
+        print(f"\n=======================================================")
+        print(f"🌀 【阶段一】开启全盘盲扫 (共 {len(pending_stocks)} 个板块)")
+        print(f"=======================================================")
+        for row in pending_stocks:
+            task_queue.put({'代码': row['代码'], '名称': row['名称'], '重试次数': 0, 'phase': 1})
+        wait_for_queue(task_queue)
+
+        # ================= 阶段二：二次复核 =================
+        print(f"\n=======================================================")
+        print(f"🌀 【阶段二】开启全盘交叉复核！相同则归档，不同则打入黑名单")
+        print(f"=======================================================")
+        for row in pending_stocks:
+            task_queue.put({'代码': row['代码'], '名称': row['名称'], '重试次数': 0, 'phase': 2})
+        wait_for_queue(task_queue)
+
+        # ================= 阶段三：终极表决 =================
+        if suspicious_stocks:
+            print(f"\n=======================================================")
+            print(f"🌀 【阶段三】发现 {len(suspicious_stocks)} 个分歧板块！启动五机甲联合表决！")
+            print(f"=======================================================")
+            for code, name in suspicious_stocks.items():
+                for _ in range(5):
+                    task_queue.put({'代码': code, '名称': name, '重试次数': 0, 'phase': 3})
+            wait_for_queue(task_queue)
+
+            print("\n🗳️ 终极表决结束，正在统计票数...")
+            for code, name in suspicious_stocks.items():
+                votes = phase_3_votes[code]
+                hash_counts = {}
+                hash_to_res = {}
+                for v in votes:
+                    h = get_result_hash(v)
+                    hash_counts[h] = hash_counts.get(h, 0) + 1
+                    hash_to_res[h] = v
+                
+                best_hash = max(hash_counts, key=hash_counts.get)
+                best_res = hash_to_res[best_hash]
+                print(f"  🏆 [{code}] {name} 表决完成！最终高票结果占比: ({hash_counts[best_hash]}/{len(votes)} 票)")
+                save_comprehensive_result(code, name, best_res["日K"], best_res["周K"], best_res["月K"])
+        else:
+            print(f"\n🎉 完美！所有板块一二审全部匹配，无需启动表决！")
 
     except KeyboardInterrupt:
         print("\n⚠️ 紧急停止！")
         with task_queue.mutex: task_queue.queue.clear()
-
+            
     finally:
-        print("🛑 所有机甲已汇报完成，正在执行最终上传...")
-        process_and_sync(is_final=True)
-        print("💤 机甲休眠。")
+        all_phases_completed = True 
+        print("🛑 所有机甲已遣散。正在执行云端代码同步...")
+        process_and_sync()
+        print("💤 指挥部断电休眠。")
