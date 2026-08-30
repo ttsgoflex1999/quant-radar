@@ -6,6 +6,7 @@ import os
 import queue
 import threading
 import sys
+import hashlib
 
 # ================= 1. 🎛️ 终极舰队全局配置区 =================
 DEVICE_LIST = [
@@ -16,22 +17,26 @@ DEVICE_LIST = [
     "127.0.0.1:16512"
 ]
 
-START_INDEX = 0
-END_INDEX = 5000    
-
-POS_SEARCH = (1016, 115)  
-POS_RESULT = (450, 250)   
-
+# 🎯 核心修复：机甲专属视觉配置文件 (已加入横向坐标盲狙参数)
+# DEVICE_CONFIGS = {
+#     "127.0.0.1:16416": {
+#         "OFFSET_Y": {"日K": 932, "周K": 932, "月K": 932},
+#         "SHI_Y_START": 1120, "SHI_Y_END": 1150,
+#         "BOX_TOP_OFFSET": 130, "BOX_BOTTOM_OFFSET": 650,
+#         "TAB_STEP_X": 100  # 👈 一号机横向间隔距离(像素)
+#     },
 DEVICE_CONFIGS = {
     "127.0.0.1:16416": {
-        "OFFSET_Y": {"日K": 932, "周K": 932, "月K": 932},
-        "SHI_Y_START": 1120, "SHI_Y_END": 1150,
-        "BOX_TOP_OFFSET": 130, "BOX_BOTTOM_OFFSET": 650
+        "OFFSET_Y": {"日K": 850, "周K": 850, "月K": 850},
+        "SHI_Y_START": 1020, "SHI_Y_END": 1050,
+        "BOX_TOP_OFFSET": 100, "BOX_BOTTOM_OFFSET": 560,
+        "TAB_STEP_X": 100  # 👈 其他机甲横向间隔距离(像素)
     },
     "DEFAULT": {
         "OFFSET_Y": {"日K": 850, "周K": 850, "月K": 850},
         "SHI_Y_START": 1020, "SHI_Y_END": 1050,
-        "BOX_TOP_OFFSET": 100, "BOX_BOTTOM_OFFSET": 560
+        "BOX_TOP_OFFSET": 100, "BOX_BOTTOM_OFFSET": 560,
+        "TAB_STEP_X": 100  # 👈 其他机甲横向间隔距离(像素)
     }
 }
 
@@ -112,30 +117,51 @@ def analyze_sideways_score(img):
 
 # ================= 3. 核心工具包 =================
 def extract_timeframe_data(d, tf_name, worker_name, device_id, calc_score=True):
-    target = d(text=tf_name)
-    if not target.wait(timeout=5.0): return False, None
+    # 🎯 永远只找“日K”作为唯一的绝对锚点！无视周K、月K的文字干扰！
+    anchor = d(text="日K")
+    if not anchor.wait(timeout=5.0): 
+        return False, None
+        
+    bounds = anchor.info['bounds']
+    base_bottom = bounds['bottom']
     
-    # 🎯 破甲机制：暴力双击！防止 App 单次点击被系统吞掉或事件排队假死
-    target.click()
-    time.sleep(0.5)
-    target.click()
+    # 提取日K按钮的正中心物理坐标
+    base_x = (bounds['left'] + bounds['right']) // 2
+    base_y = (bounds['top'] + bounds['bottom']) // 2
     
-    # 🎯 等待 3.0 秒：彻底抹平网络加载+重新渲染带来的所有时间差
-    time.sleep(3.0) 
+    config = DEVICE_CONFIGS.get(device_id, DEVICE_CONFIGS["DEFAULT"])
+    step_x = config.get("TAB_STEP_X", 100) 
+    
+    # 🎯 降维打击：通过日K坐标盲推点击位置
+    click_x = base_x
+    click_y = base_y
+    if tf_name == "周K":
+        click_x = base_x + step_x
+    elif tf_name == "月K":
+        click_x = base_x + (step_x * 2)
+
+    # 🎯 坐标盲狙暴力双击！
+    # 哪怕是日K也要点，因为刚进板块时可能处于月K的残留状态
+    d.click(click_x, click_y)
+    time.sleep(0.2)
+    d.click(click_x, click_y)
+
+    # 给足 2.5 秒的绝对渲染时间
+    time.sleep(2.5) 
 
     img = d.screenshot(format='pillow').convert('RGB')
     info = d.info
     scale_y = img.size[1] / info['displayHeight']
-    
-    anchor = d(text="日K")
-    base_bottom = anchor.info['bounds']['bottom'] if anchor.exists else target.info['bounds']['bottom']
-    config = DEVICE_CONFIGS.get(device_id, DEVICE_CONFIGS["DEFAULT"])
 
     pixel_base_y_shi = int(base_bottom * scale_y)
     has_shi = detect_shi_character_fast(img, pixel_base_y_shi, config)
     validator_y = int(max(10, min(base_bottom + VALIDATOR_OFFSET_Y, 1900)))
     current_offset_y = config["OFFSET_Y"].get(tf_name, config["OFFSET_Y"]["日K"])
     target_y = int(max(10, min(base_bottom + current_offset_y, 1900)))
+
+    # 🎯 保留像素指纹防伪，双重保险防残影
+    val_box = img.crop((SCAN_X_START, target_y - 20, SCAN_X_END, target_y + 20))
+    pixel_fingerprint = hashlib.md5(val_box.tobytes()).hexdigest()
 
     canvas_loaded = any(abs(img.getpixel((x, validator_y))[0] - img.getpixel((x, validator_y))[1]) > 20 for x in range(SCAN_X_START, SCAN_X_END + 1, 10))
     if not canvas_loaded: return False, None
@@ -167,7 +193,8 @@ def extract_timeframe_data(d, tf_name, worker_name, device_id, calc_score=True):
 
     result = {
         "shi": has_shi, "score": best_score, "tier": best_tier, 
-        "seq_file": seq_file, "seq_arr": data_array, "seq_term": seq_terminal
+        "seq_file": seq_file, "seq_arr": data_array, "seq_term": seq_terminal,
+        "fingerprint": pixel_fingerprint
     }
     return True, result
 
@@ -257,17 +284,29 @@ def worker(device_id, task_queue, worker_name):
             if not input_success: 
                 raise Exception("搜索完全失败")
 
+            # 强制洗脑重置
+            try:
+                fenshi = d(text="分时")
+                if fenshi.exists:
+                    for t in fenshi:
+                        if t.info['bounds']['top'] > 500:
+                            t.click()
+                            break
+                time.sleep(1.0)
+            except: pass
+
             # ============= 正常提取数据 =============
             results = {}
             for tf in ["日K", "周K", "月K"]:
                 success, res = extract_timeframe_data(d, tf, worker_name, device_id, calc_score=(tf == "日K"))
-                if not success: raise Exception(f"{tf} 加载失败")
+                if not success: raise Exception(f"{tf} 加载或定位失败")
                 
-                # 🎯 升级版【全维防残影屏障】：彻底封杀UI错位！
-                # 将刚拍下的结果，和之前拍的所有周期结果进行比对，若像素级一样，必是残影！
+                is_empty = not any(x != 0 for x in res["seq_arr"])
+
+                # 像素级指纹防伪
                 for prev_tf, prev_res in results.items():
-                    if res["seq_arr"] == prev_res["seq_arr"] and any(x != 0 for x in res["seq_arr"]):
-                        raise Exception(f"🚨 致命UI延迟发现：【{tf}】截取到了【{prev_tf}】的残影错位数据！强制重查！")
+                    if res["fingerprint"] == prev_res["fingerprint"] and not is_empty:
+                        raise Exception(f"🚨 幽灵卡顿发现！【{tf}】截取到了【{prev_tf}】的同模残影！强制重搜！")
 
                 results[tf] = res
                 shi_icon = "🔴有" if res['shi'] else "➖无"
@@ -275,7 +314,7 @@ def worker(device_id, task_queue, worker_name):
                 print(f"  📺 [{worker_name}] {tf} | 始字:{shi_icon} {score_str}\n      扫描: [{res['seq_term']}]")
             
         except Exception as e:
-            print(f"  ⚠️ [{worker_name}] 板块 {stock_code} 提取异常: {e}")
+            print(f"  ⚠️ [{worker_name}] 板块 {stock_code} 异常: {e}")
             if retry_count < 3:
                 task['重试次数'] += 1
                 task_queue.put(task)
@@ -283,7 +322,7 @@ def worker(device_id, task_queue, worker_name):
                 continue
             else:
                 print(f"  ❌ [{worker_name}] 板块 {stock_code} 连续3次失败，使用保底空数据！")
-                empty_res = {"shi": False, "score": 0, "tier": "提取失败", "seq_file": "", "seq_arr": [], "seq_term": ""}
+                empty_res = {"shi": False, "score": 0, "tier": "提取失败", "seq_file": "", "seq_arr": [], "seq_term": "", "fingerprint": ""}
                 results = {"日K": empty_res, "周K": empty_res, "月K": empty_res}
 
         # ================= 5. 🎯 多阶段校验逻辑 =================
@@ -327,6 +366,20 @@ def wait_for_queue(tq):
 if __name__ == "__main__":
     print("=== 🚀 开启 quant-radar [增强型双重校验与表决架构] ===")
     
+    # 🎯 新增：交互式指定检索范围，方便断点续传或专门测 Bug 板块
+    try:
+        start_input = input("👉 请输入起始检测序号 (按回车默认从 0 开始): ").strip()
+        START_INDEX = int(start_input) if start_input else 0
+        end_input = input("👉 请输入结束检测序号 (按回车默认跑完 5000): ").strip()
+        END_INDEX = int(end_input) if end_input else 5000
+    except ValueError:
+        print("⚠️ 输入格式错误，采用默认范围 0 - 5000")
+        START_INDEX = 0
+        END_INDEX = 5000
+        
+    print(f"🎯 本次任务雷达已锁定：第 {START_INDEX} 到 {END_INDEX} 个板块。")
+    print("=======================================================\n")
+    
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     input_file = os.path.join(BASE_DIR, INPUT_CSV)
     
@@ -356,7 +409,7 @@ if __name__ == "__main__":
     pending_stocks = [row for idx, row in stock_list.iterrows() if row['代码'] not in completed_stocks_set]
     
     if not pending_stocks:
-        print("🎉 所有板块均已检测完毕，系统退出。")
+        print("🎉 所选范围内的板块均已检测完毕，系统退出。")
         exit()
 
     task_queue = queue.Queue()

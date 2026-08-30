@@ -5,20 +5,20 @@ from PIL import ImageDraw
 DEVICE_IP = "127.0.0.1:16416"  # 用一号机做测试
 
 # 📍 1. 红绿柱检测参数 (Y轴基于日K按钮偏移)
-OFFSET_Y = 932              
+OFFSET_Y = 850           
 SCAN_X_START = 10
 SCAN_X_END = 755
 
 # 📍 2. 始字检测参数 (Y轴基于日K按钮偏移，X轴绝对位置)
 SHI_X_START = 730
 SHI_X_END = 770
-SHI_Y_START = 1120
-SHI_Y_END = 1150
+SHI_Y_START = 1030
+SHI_Y_END = 1060
 
 # 📍 3. 横盘评分大框参数 (Y轴基于日K按钮偏移，X轴右边界绝对位置)
-BOX_TOP_OFFSET = 130           
-BOX_BOTTOM_OFFSET = 650        
-BOX_X_END = 755                
+BOX_TOP_OFFSET = 100           
+BOX_BOTTOM_OFFSET = 560        
+BOX_X_END = 770                
 AMP_MAX_TOLERANCE = 0.30       
 DRIFT_MAX_TOLERANCE = 0.20     
 # ============================================
