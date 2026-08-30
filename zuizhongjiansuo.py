@@ -17,15 +17,16 @@ DEVICE_LIST = [
     "127.0.0.1:16512"
 ]
 
-# 🎯 核心修复：机甲专属视觉配置文件 (已加入横向坐标盲狙参数)
-# DEVICE_CONFIGS = {
-#     "127.0.0.1:16416": {
-#         "OFFSET_Y": {"日K": 932, "周K": 932, "月K": 932},
-#         "SHI_Y_START": 1120, "SHI_Y_END": 1150,
-#         "BOX_TOP_OFFSET": 130, "BOX_BOTTOM_OFFSET": 650,
-#         "TAB_STEP_X": 100  # 👈 一号机横向间隔距离(像素)
-#     },
+POS_SEARCH = (1016, 115)  
+POS_RESULT = (450, 250)   
+
 DEVICE_CONFIGS = {
+    # "127.0.0.1:16416": {
+    #     "OFFSET_Y": {"日K": 932, "周K": 932, "月K": 932},
+    #     "SHI_Y_START": 1120, "SHI_Y_END": 1150,
+    #     "BOX_TOP_OFFSET": 130, "BOX_BOTTOM_OFFSET": 650,
+    #     "TAB_STEP_X": 100  # 👈 一号机横向间隔距离(像素)
+    # },
     "127.0.0.1:16416": {
         "OFFSET_Y": {"日K": 850, "周K": 850, "月K": 850},
         "SHI_Y_START": 1020, "SHI_Y_END": 1050,
@@ -117,7 +118,7 @@ def analyze_sideways_score(img):
 
 # ================= 3. 核心工具包 =================
 def extract_timeframe_data(d, tf_name, worker_name, device_id, calc_score=True):
-    # 🎯 永远只找“日K”作为唯一的绝对锚点！无视周K、月K的文字干扰！
+    # 🎯 永远只找“日K”作为唯一的绝对锚点！
     anchor = d(text="日K")
     if not anchor.wait(timeout=5.0): 
         return False, None
@@ -140,13 +141,12 @@ def extract_timeframe_data(d, tf_name, worker_name, device_id, calc_score=True):
     elif tf_name == "月K":
         click_x = base_x + (step_x * 2)
 
-    # 🎯 坐标盲狙暴力双击！
-    # 哪怕是日K也要点，因为刚进板块时可能处于月K的残留状态
+    # 🎯 坐标盲狙暴力双击！绕开一切UI检索误导
     d.click(click_x, click_y)
     time.sleep(0.2)
     d.click(click_x, click_y)
 
-    # 给足 2.5 秒的绝对渲染时间
+    # 给足 2.5 秒的绝对渲染时间，彻底抹平网络延迟
     time.sleep(2.5) 
 
     img = d.screenshot(format='pillow').convert('RGB')
@@ -159,7 +159,7 @@ def extract_timeframe_data(d, tf_name, worker_name, device_id, calc_score=True):
     current_offset_y = config["OFFSET_Y"].get(tf_name, config["OFFSET_Y"]["日K"])
     target_y = int(max(10, min(base_bottom + current_offset_y, 1900)))
 
-    # 🎯 保留像素指纹防伪，双重保险防残影
+    # 🎯 提取当前切片的像素指纹防伪
     val_box = img.crop((SCAN_X_START, target_y - 20, SCAN_X_END, target_y + 20))
     pixel_fingerprint = hashlib.md5(val_box.tobytes()).hexdigest()
 
@@ -284,17 +284,6 @@ def worker(device_id, task_queue, worker_name):
             if not input_success: 
                 raise Exception("搜索完全失败")
 
-            # 强制洗脑重置
-            try:
-                fenshi = d(text="分时")
-                if fenshi.exists:
-                    for t in fenshi:
-                        if t.info['bounds']['top'] > 500:
-                            t.click()
-                            break
-                time.sleep(1.0)
-            except: pass
-
             # ============= 正常提取数据 =============
             results = {}
             for tf in ["日K", "周K", "月K"]:
@@ -303,7 +292,7 @@ def worker(device_id, task_queue, worker_name):
                 
                 is_empty = not any(x != 0 for x in res["seq_arr"])
 
-                # 像素级指纹防伪
+                # 🎯 像素级指纹防伪机制
                 for prev_tf, prev_res in results.items():
                     if res["fingerprint"] == prev_res["fingerprint"] and not is_empty:
                         raise Exception(f"🚨 幽灵卡顿发现！【{tf}】截取到了【{prev_tf}】的同模残影！强制重搜！")
@@ -366,7 +355,6 @@ def wait_for_queue(tq):
 if __name__ == "__main__":
     print("=== 🚀 开启 quant-radar [增强型双重校验与表决架构] ===")
     
-    # 🎯 新增：交互式指定检索范围，方便断点续传或专门测 Bug 板块
     try:
         start_input = input("👉 请输入起始检测序号 (按回车默认从 0 开始): ").strip()
         START_INDEX = int(start_input) if start_input else 0
