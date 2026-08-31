@@ -2,10 +2,11 @@ import streamlit as st
 import pandas as pd
 import os
 import time
+import random
 import requests
 import threading
 import concurrent.futures
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from streamlit_autorefresh import st_autorefresh
 
 # ================= 1. 网页全局配置 =================
@@ -146,21 +147,28 @@ def _parse_year_lines(text):
     return out
 
 _PERIOD_MAP = {"day": "01", "week": "11", "month": "21"}  # 同花顺官方周期代码
+_BJT = timezone(timedelta(hours=8))  # 同花顺K线日期以北京时间为准（云端服务器是UTC，直接取本机时间跨年/跨日会出错）
+
+def _now_bj():
+    return datetime.now(_BJT)
 
 def fetch_recent_closes(code, period="day", need=7):
     """
     按周期直连同花顺官方日/周/月K线（一次请求返回全年，含最新实时一期）。
-    数据不足时自动补上一年。失败自动刷新v cookie重试一次，仍失败静默返回空。
+    数据不足时自动补上一年。共尝试3次（逐步退避+随机抖动防限流），
+    每次失败后强制刷新v cookie再试，彻底失败才返回空（页面显示空白，绝不填假0）。
     """
     p = _PERIOD_MAP.get(period, "01")
-    for _attempt in range(2):
+    for attempt in range(3):
+        if attempt:
+            time.sleep(0.6 * attempt + random.uniform(0, 0.5))
         headers = get_ths_headers()
-        year = datetime.now().year
+        year = _now_bj().year
         collected = []
         for y in (year, year - 1):
             try:
                 url = f"https://d.10jqka.com.cn/v4/line/bk_{code}/{p}/{y}.js"
-                r = requests.get(url, headers=headers, timeout=8)
+                r = requests.get(url, headers=headers, timeout=10)
                 year_lines = _parse_year_lines(r.text)
                 collected = year_lines + collected  # 上一年数据在前
                 if len(collected) >= need:
@@ -169,26 +177,29 @@ def fetch_recent_closes(code, period="day", need=7):
                 continue
         if collected:
             return collected[-need:]
-        _get_v_code(force_refresh=True)  # 失败刷新cookie后重试一次
+        _get_v_code(force_refresh=True)  # 失败刷新cookie后重试
     return []
 
 def _calc_changes(closes, n=5):
-    """最近n期涨跌幅：返回 (changes[0]=最新期涨跌, dates[0]=最新期日期, 最新价)"""
+    """
+    最近n期涨跌幅：返回 (changes[0]=最新期涨跌, dates[0]=最新期日期, 最新价)。
+    拉取失败或历史不足的期次为None（页面显示空白，绝不显示假0.00）。
+    """
     if len(closes) < 2:
-        return [0.0] * n, [''] * n, 0.0
+        return [None] * n, [''] * n, (closes[-1][1] if closes else None)
     changes, dates = [], []
     for i in range(len(closes) - 1, 0, -1):
         prev_c = closes[i - 1][1]
         curr_c = closes[i][1]
         if prev_c <= 0:
-            changes.append(0.0)
+            changes.append(None)
         else:
             changes.append(round((curr_c - prev_c) / prev_c * 100, 2))
         dates.append(closes[i][0])
         if len(changes) >= n:
             break
     while len(changes) < n:
-        changes.append(0.0)
+        changes.append(None)
         dates.append('')
     return changes, dates, closes[-1][1]
 
@@ -197,7 +208,7 @@ def get_all_changes_multi(codes_tuple):
     """
     并发拉取全部板块的日K/周K/月K官方K线，分别计算最近5期涨跌幅。
     返回 {'day': (DataFrame, 最新期日期), 'week': (...), 'month': (...)}
-    DataFrame列: [代码, 5个'{日期}涨跌%', 最新价]
+    DataFrame列: [代码, 5个'{日期}涨跌%', 最新价]（拉取失败的单元格为空值，页面显示空白）
     """
     tasks = [(c, p) for p in ("day", "week", "month") for c in codes_tuple]
 
@@ -207,10 +218,11 @@ def get_all_changes_multi(codes_tuple):
             changes, dates, price = _calc_changes(fetch_recent_closes(code, period=period))
             return (code, period, changes, dates, price)
         except Exception:
-            return (code, period, [0.0] * 5, [''] * 5, 0.0)
+            return (code, period, [None] * 5, [''] * 5, None)
 
     results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=30) as executor:
+    # 并发控制在16：实测过高并发会触发同花顺限流，导致云端间歇性拉取失败
+    with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
         for r in executor.map(work, tasks):
             results.append(r)
 
@@ -275,13 +287,12 @@ try:
         df_chg, latest = period_data
         if df_chg is not None and not df_chg.empty:
             out = pd.merge(out, df_chg, on='代码', how='left')
-        if '最新价' not in out.columns:
-            out['最新价'] = 0.0
-        out['最新价'] = pd.to_numeric(out['最新价'], errors='coerce').fillna(0.0)
-        # 静默填充缺失值（不在页面显示任何错误/警告）
+        # 拉取失败/历史不足的单元格保留空值（页面显示空白），绝不填假0.00
+        if '最新价' in out.columns:
+            out['最新价'] = pd.to_numeric(out['最新价'], errors='coerce')
         chg_cols = [c for c in out.columns if '涨跌' in str(c)]
         for c in chg_cols:
-            out[c] = pd.to_numeric(out[c], errors='coerce').fillna(0.0)
+            out[c] = pd.to_numeric(out[c], errors='coerce')
         return out, chg_cols, latest
 
     final_df, day_chg_cols, day_latest = merge_period(df_target, changes_data['day'])
@@ -289,10 +300,10 @@ try:
     month_df, month_chg_cols, month_latest = merge_period(df_target, changes_data['month'])
 
     def fmt_latest_date(raw):
-        """最新期日期展示（当日实时会自动标注）"""
+        """最新期日期展示（按北京时间判断，当日实时会自动标注）"""
         if raw and len(raw) >= 8:
             s = f"{raw[:4]}-{raw[4:6]}-{raw[6:8]}"
-            if raw == datetime.now().strftime('%Y%m%d'):
+            if raw == _now_bj().strftime('%Y%m%d'):
                 s += "（今日实时）"
             return s
         return ""
