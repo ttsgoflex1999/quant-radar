@@ -61,6 +61,27 @@ def get_seq_priority(seq_str):
         # 纯绿柱或没信号的垫底
         return (1, 9999, 0, first_green_idx if first_green_idx != -1 else 9999)
 
+def color_change(val):
+    """涨红跌绿配色 (中国股市惯例：涨为红，跌为绿)，颜色淡一点"""
+    if pd.isna(val) or not isinstance(val, (int, float)):
+        return ''
+    if val > 0:
+        return 'background-color: #FFD6D6'
+    elif val < 0:
+        return 'background-color: #D6FFD6'
+    return ''
+
+def style_changes_df(df):
+    """为包含涨跌数据的DataFrame添加背景色样式"""
+    change_cols = [c for c in df.columns if '涨跌' in c]
+    if not change_cols:
+        return df
+    try:
+        return df.style.map(color_change, subset=change_cols)
+    except AttributeError:
+        # 兼容旧版pandas
+        return df.style.applymap(color_change, subset=change_cols)
+
 # ================= 3. 侧边栏及中控 =================
 st.sidebar.title("🎛️ 猎鹰雷达中控台")
 radar_mode = st.sidebar.radio(
@@ -144,6 +165,62 @@ def get_sector_5days_changes(stock_data):
         })
     return pd.DataFrame(rows)
 
+@st.cache_data(ttl=300, show_spinner="📡 获取今日实时涨跌数据...")
+def get_today_realtime(sector_names):
+    """
+    获取今日实时涨跌数据。
+    优先使用东方财富API（覆盖全行业+概念板块），回退到同花顺行业汇总。
+    返回: {sector_name: (today_change_pct, today_close_price)}
+    """
+    result = {}
+
+    # 1. 东方财富概念板块 (包含今日涨跌+最新价)
+    try:
+        df = ak.stock_board_concept_name_em()
+        name_col = '板块名称' if '板块名称' in df.columns else df.columns[1]
+        for _, row in df.iterrows():
+            try:
+                name = str(row[name_col])
+                change = float(row.get('涨跌幅', 0))
+                price = float(row.get('最新价', 0))
+                result[name] = (change, price if price else None)
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    # 2. 东方财富行业板块 (补充)
+    try:
+        df = ak.stock_board_industry_name_em()
+        name_col = '板块名称' if '板块名称' in df.columns else df.columns[1]
+        for _, row in df.iterrows():
+            try:
+                name = str(row[name_col])
+                if name not in result:
+                    change = float(row.get('涨跌幅', 0))
+                    price = float(row.get('最新价', 0))
+                    result[name] = (change, price if price else None)
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    # 3. 同花顺行业汇总 (作为行业板块的回退)
+    try:
+        df = ak.stock_board_industry_summary_ths()
+        for _, row in df.iterrows():
+            try:
+                name = str(row['板块'])
+                change = float(row['涨跌幅'])
+                if name not in result:
+                    result[name] = (change, None)
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    return result
+
 # ================= 5. 数据读取与渲染 =================
 RAW_CSV = "板块全维底层数据_V5最新版.csv"
 if not os.path.exists(RAW_CSV):
@@ -173,9 +250,42 @@ try:
     fill_cols = ['第5日涨跌(%)', '第4日涨跌(%)', '第3日涨跌(%)', '第2日涨跌(%)', '第1日涨跌(%)', '最新价']
     final_df.fillna({c: 0.0 for c in fill_cols}, inplace=True)
 
-    # 提取最新交易日信息 (从第一个有效结果)
+    # 获取今日实时涨跌并合并 (将今日数据插入为第1日，历史数据顺延)
+    sector_names = df_target['名称'].tolist()
+    today_data = get_today_realtime(sector_names)
+    today_date_str = datetime.now().strftime('%Y-%m-%d')
+    has_today = [False]
+
+    if today_data:
+        def merge_today(row):
+            name = str(row['名称'])
+            if name in today_data:
+                today_change, today_price = today_data[name]
+                # 将历史 第1日→第2日, 第2日→第3日, ... 第4日→第5日
+                row['第5日涨跌(%)'] = row['第4日涨跌(%)']
+                row['第4日涨跌(%)'] = row['第3日涨跌(%)']
+                row['第3日涨跌(%)'] = row['第2日涨跌(%)']
+                row['第2日涨跌(%)'] = row['第1日涨跌(%)']
+                row['第1日涨跌(%)'] = float(today_change)
+                # 顺延日期
+                row['第5日日期'] = row['第4日日期']
+                row['第4日日期'] = row['第3日日期']
+                row['第3日日期'] = row['第2日日期']
+                row['第2日日期'] = row['第1日日期']
+                row['第1日日期'] = today_date_str
+                # 更新最新价
+                if today_price:
+                    row['最新价'] = float(today_price)
+                has_today[0] = True
+            return row
+
+        final_df = final_df.apply(merge_today, axis=1)
+
+    # 提取最新交易日信息
     latest_date_str = ""
-    if not df_changes.empty and '第1日日期' in df_changes.columns:
+    if has_today[0]:
+        latest_date_str = f"{today_date_str} (今日实时)"
+    elif not df_changes.empty and '第1日日期' in df_changes.columns:
         valid_dates = df_changes[df_changes['第1日日期'] != '']['第1日日期']
         if not valid_dates.empty:
             latest_date_str = valid_dates.iloc[0]
@@ -201,7 +311,7 @@ try:
             show_day.columns = ['板块代码', '板块名称', '日K定级', '横盘得分', '日K红绿柱序列', '最新价',
                                 '第5日涨跌(%)', '第4日涨跌(%)', '第3日涨跌(%)', '第2日涨跌(%)', '第1日涨跌(%)']
             show_day.index = range(1, len(show_day) + 1)
-            st.dataframe(show_day, use_container_width=True)
+            st.dataframe(style_changes_df(show_day), use_container_width=True)
 
         with tab_week:
             df_week = final_df[final_df['周K_green_dist'] < 999].copy()
@@ -213,7 +323,7 @@ try:
             show_week.columns = ['板块代码', '板块名称', '周K红绿柱序列', '最新价',
                                  '第5日涨跌(%)', '第4日涨跌(%)', '第3日涨跌(%)', '第2日涨跌(%)', '第1日涨跌(%)']
             show_week.index = range(1, len(show_week) + 1)
-            st.dataframe(show_week, use_container_width=True)
+            st.dataframe(style_changes_df(show_week), use_container_width=True)
 
         with tab_month:
             df_month = final_df[final_df['月K_green_dist'] < 999].copy()
@@ -225,7 +335,7 @@ try:
             show_month.columns = ['板块代码', '板块名称', '月K红绿柱序列', '最新价',
                                   '第5日涨跌(%)', '第4日涨跌(%)', '第3日涨跌(%)', '第2日涨跌(%)', '第1日涨跌(%)']
             show_month.index = range(1, len(show_month) + 1)
-            st.dataframe(show_month, use_container_width=True)
+            st.dataframe(style_changes_df(show_month), use_container_width=True)
 
     # ==========================
     # 模块二："始"字变盘捕获 (共振大表)
@@ -279,7 +389,7 @@ try:
             show_shi.index = range(1, len(show_shi) + 1)
 
             st.metric(label="当前捕获变盘目标总数", value=f"{len(show_shi)} 个")
-            st.dataframe(show_shi, use_container_width=True, height=800)
+            st.dataframe(style_changes_df(show_shi), use_container_width=True, height=800)
 
 except FileNotFoundError:
     st.warning("⏳ 等待机甲生成底层数据文件 (找不到底层 CSV)...")
