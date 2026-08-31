@@ -1,15 +1,17 @@
 import streamlit as st
 import pandas as pd
 import os
+import time
+import requests
+import threading
 import concurrent.futures
-import akshare as ak
-from datetime import datetime, timedelta
+from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
 
 # ================= 1. 网页全局配置 =================
 st.set_page_config(page_title="猎鹰量化雷达引擎", page_icon="🦅", layout="wide")
 st.markdown("<style>#MainMenu {visibility: hidden;} footer {visibility: hidden;} header {visibility: hidden;}</style>", unsafe_allow_html=True)
-st_autorefresh(interval=60000, limit=10000, key="data_refresh")
+st_autorefresh(interval=300000, limit=10000, key="data_refresh")  # 5分钟自动刷新，降低断连概率
 
 # ================= 2. 辅助函数：核心序列处理 =================
 def format_seq(seq_str):
@@ -23,14 +25,14 @@ def format_seq(seq_str):
 
 def get_seq_priority(seq_str):
     """
-    🎯 核心排序算法升级：红柱绝对优先！
-    返回值：(是否有红柱(0有1无), 第一个红柱距离, -连续红柱数量(负数为了正序排), 第一个绿柱距离)
+    🎯 核心排序算法：红柱绝对优先！
+    返回值：(是否有红柱(0有1无), 第一个红柱距离, -连续红柱数量, 第一个绿柱距离)
     """
     if pd.isna(seq_str) or str(seq_str).strip() == "":
         return (1, 9999, 0, 9999)
 
     seq_list = str(seq_str).split(',')
-    rev_seq = list(reversed(seq_list)) # 从右向左看
+    rev_seq = list(reversed(seq_list))
 
     first_red_idx = -1
     first_green_idx = -1
@@ -43,8 +45,6 @@ def get_seq_priority(seq_str):
             first_green_idx = i
 
     if first_red_idx != -1:
-        # 如果有红柱，计算向左的连续红柱数量
-        # 因为扫描间距是2像素，允许最大6个单位(12像素)的合理空隙
         continuous_reds = 0
         last_red_pos = first_red_idx
         for i in range(first_red_idx, len(rev_seq)):
@@ -54,33 +54,33 @@ def get_seq_priority(seq_str):
                     continuous_reds += 1
                     last_red_pos = i
                 else:
-                    break # 间距过大，红柱断裂，停止计算
-        # 返回: (0代表有红柱, 红柱距离越小越好, 数量取负数越小越好(排在前面), 绿柱距离)
+                    break
         return (0, first_red_idx, -continuous_reds, first_green_idx if first_green_idx != -1 else 9999)
     else:
-        # 纯绿柱或没信号的垫底
         return (1, 9999, 0, first_green_idx if first_green_idx != -1 else 9999)
 
 def color_change(val):
-    """涨红跌绿配色 (中国股市惯例：涨为红，跌为绿)，颜色淡一点"""
+    """涨红跌绿淡背景色 (A股惯例)"""
     if pd.isna(val) or not isinstance(val, (int, float)):
         return ''
     if val > 0:
-        return 'background-color: #FFD6D6'
+        return 'background-color: #FFE1E1'
     elif val < 0:
-        return 'background-color: #D6FFD6'
+        return 'background-color: #DFFFD8'
     return ''
 
 def style_changes_df(df):
-    """为包含涨跌数据的DataFrame添加背景色样式"""
-    change_cols = [c for c in df.columns if '涨跌' in c]
-    if not change_cols:
-        return df
+    """为涨跌列添加背景色样式（静默失败不影响展示）"""
     try:
-        return df.style.map(color_change, subset=change_cols)
-    except AttributeError:
-        # 兼容旧版pandas
-        return df.style.applymap(color_change, subset=change_cols)
+        change_cols = [c for c in df.columns if '涨跌' in str(c)]
+        if not change_cols:
+            return df
+        styler = df.style
+        for col in change_cols:
+            styler = styler.map(color_change, subset=[col])
+        return styler
+    except Exception:
+        return df
 
 # ================= 3. 侧边栏及中控 =================
 st.sidebar.title("🎛️ 猎鹰雷达中控台")
@@ -91,135 +91,166 @@ radar_mode = st.sidebar.radio(
 st.sidebar.markdown("---")
 st.sidebar.success("🤖 系统已连接最新板块全维数据。")
 
-# ================= 4. akshare 板块数据获取 =================
-@st.cache_data(ttl=3600, show_spinner="📡 正在通过akshare获取板块最近5个交易日涨跌数据，请稍候...")
-def get_sector_5days_changes(stock_data):
+# ================= 4. 同花顺板块K线直连（单一数据源，日/周/月K各取各的官方数据，含最新实时） =================
+_V_CODE = None
+_V_TS = 0.0
+_V_LOCK = threading.Lock()
+
+def _get_v_code(force_refresh=False):
+    """计算同花顺 v cookie（线程安全；每6小时自动轮换，失败可强制刷新，60秒内不重复刷）"""
+    global _V_CODE, _V_TS
+    with _V_LOCK:
+        age = time.time() - _V_TS
+        need = _V_CODE is None or age > 6 * 3600 or (force_refresh and age > 60)
+        if need:
+            try:
+                from akshare.stock_feature.stock_board_industry_ths import _get_file_content_ths
+                import py_mini_racer
+                js = py_mini_racer.MiniRacer()
+                js.eval(_get_file_content_ths("ths.js"))
+                _V_CODE = js.call("v")
+                _V_TS = time.time()
+            except Exception:
+                _V_CODE = ""
+    return _V_CODE
+
+def get_ths_headers():
+    """每次实时组装headers，保证v cookie刷新后立即生效"""
+    v = _get_v_code()
+    return {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.90 Safari/537.36",
+        "Referer": "http://q.10jqka.com.cn",
+        "Host": "d.10jqka.com.cn",
+        "Cookie": f"v={v}" if v else "",
+    }
+
+def _parse_year_lines(text):
+    """解析某一年K线js文本 -> [(date, close), ...]（静默失败返回空）"""
+    out = []
+    try:
+        from akshare.utils import demjson
+        idx = text.find("{")
+        if idx == -1:
+            return out
+        obj = demjson.decode(text[idx:-1])
+        data = obj.get("data", "")
+        for line in data.split(";"):
+            parts = line.split(",")
+            if len(parts) >= 5:
+                try:
+                    out.append((str(parts[0]), float(parts[4])))
+                except (ValueError, TypeError):
+                    continue
+    except Exception:
+        pass
+    return out
+
+_PERIOD_MAP = {"day": "01", "week": "11", "month": "21"}  # 同花顺官方周期代码
+
+def fetch_recent_closes(code, period="day", need=7):
     """
-    使用 akshare 获取每个板块最近5个交易日的涨跌情况。
-    - 行业板块 (881xxx): stock_board_industry_index_ths
-    - 概念板块 (885xxx / 886xxx): stock_board_concept_index_ths
-    stock_data: list of (code, name) tuples
-    返回: DataFrame[code, change_1..change_5, date_1..date_5, latest_price]
+    按周期直连同花顺官方日/周/月K线（一次请求返回全年，含最新实时一期）。
+    数据不足时自动补上一年。失败自动刷新v cookie重试一次，仍失败静默返回空。
     """
-    def fetch_one(item):
-        code, name = item
+    p = _PERIOD_MAP.get(period, "01")
+    for _attempt in range(2):
+        headers = get_ths_headers()
+        year = datetime.now().year
+        collected = []
+        for y in (year, year - 1):
+            try:
+                url = f"https://d.10jqka.com.cn/v4/line/bk_{code}/{p}/{y}.js"
+                r = requests.get(url, headers=headers, timeout=8)
+                year_lines = _parse_year_lines(r.text)
+                collected = year_lines + collected  # 上一年数据在前
+                if len(collected) >= need:
+                    break
+            except Exception:
+                continue
+        if collected:
+            return collected[-need:]
+        _get_v_code(force_refresh=True)  # 失败刷新cookie后重试一次
+    return []
+
+def _calc_changes(closes, n=5):
+    """最近n期涨跌幅：返回 (changes[0]=最新期涨跌, dates[0]=最新期日期, 最新价)"""
+    if len(closes) < 2:
+        return [0.0] * n, [''] * n, 0.0
+    changes, dates = [], []
+    for i in range(len(closes) - 1, 0, -1):
+        prev_c = closes[i - 1][1]
+        curr_c = closes[i][1]
+        if prev_c <= 0:
+            changes.append(0.0)
+        else:
+            changes.append(round((curr_c - prev_c) / prev_c * 100, 2))
+        dates.append(closes[i][0])
+        if len(changes) >= n:
+            break
+    while len(changes) < n:
+        changes.append(0.0)
+        dates.append('')
+    return changes, dates, closes[-1][1]
+
+@st.cache_data(ttl=600, show_spinner="📡 后台同步日/周/月K线官方数据（首次约半分钟，之后秒开）...")
+def get_all_changes_multi(codes_tuple):
+    """
+    并发拉取全部板块的日K/周K/月K官方K线，分别计算最近5期涨跌幅。
+    返回 {'day': (DataFrame, 最新期日期), 'week': (...), 'month': (...)}
+    DataFrame列: [代码, 5个'{日期}涨跌%', 最新价]
+    """
+    tasks = [(c, p) for p in ("day", "week", "month") for c in codes_tuple]
+
+    def work(args):
+        code, period = args
         try:
-            end_date = datetime.now().strftime('%Y%m%d')
-            start_date = (datetime.now() - timedelta(days=25)).strftime('%Y%m%d')
-            if str(code).startswith('881'):
-                df = ak.stock_board_industry_index_ths(symbol=name, start_date=start_date, end_date=end_date)
-            else:
-                df = ak.stock_board_concept_index_ths(symbol=name, start_date=start_date, end_date=end_date)
-
-            if df is None or df.empty or len(df) < 2:
-                return (code, [0.0]*5, ['']*5, 0.0)
-
-            closes = df['收盘价'].tolist()
-            dates = df['日期'].tolist()
-            latest_price = float(closes[-1])
-
-            # 计算每日涨跌幅
-            changes = []
-            for i in range(1, len(closes)):
-                prev = float(closes[i-1])
-                curr = float(closes[i])
-                pct = round((curr - prev) / prev * 100, 2)
-                changes.append(pct)
-
-            # 不足5天时前面补0
-            while len(changes) < 5:
-                changes.insert(0, 0.0)
-
-            # 取最近5天的涨跌 + 对应日期
-            changes = changes[-5:]
-            # 对应日期(收盘日) - 取最近5个交易日
-            date_list = [str(d) for d in dates[-5:]]
-            while len(date_list) < 5:
-                date_list.insert(0, '')
-
-            return (code, changes, date_list, latest_price)
+            changes, dates, price = _calc_changes(fetch_recent_closes(code, period=period))
+            return (code, period, changes, dates, price)
         except Exception:
-            return (code, [0.0]*5, ['']*5, 0.0)
+            return (code, period, [0.0] * 5, [''] * 5, 0.0)
 
     results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
-        futures = [executor.submit(fetch_one, item) for item in stock_data]
-        for future in concurrent.futures.as_completed(futures):
-            results.append(future.result())
+    with concurrent.futures.ThreadPoolExecutor(max_workers=30) as executor:
+        for r in executor.map(work, tasks):
+            results.append(r)
 
-    rows = []
-    for code, changes, dates, price in results:
-        rows.append({
-            '代码': code,
-            '第5日涨跌(%)': changes[0],
-            '第4日涨跌(%)': changes[1],
-            '第3日涨跌(%)': changes[2],
-            '第2日涨跌(%)': changes[3],
-            '第1日涨跌(%)': changes[4],
-            '第5日日期': dates[0],
-            '第4日日期': dates[1],
-            '第3日日期': dates[2],
-            '第2日日期': dates[3],
-            '第1日日期': dates[4],
-            '最新价': price,
-        })
-    return pd.DataFrame(rows)
-
-@st.cache_data(ttl=300, show_spinner="📡 获取今日实时涨跌数据...")
-def get_today_realtime(sector_names):
-    """
-    获取今日实时涨跌数据。
-    优先使用东方财富API（覆盖全行业+概念板块），回退到同花顺行业汇总。
-    返回: {sector_name: (today_change_pct, today_close_price)}
-    """
-    result = {}
-
-    # 1. 东方财富概念板块 (包含今日涨跌+最新价)
-    try:
-        df = ak.stock_board_concept_name_em()
-        name_col = '板块名称' if '板块名称' in df.columns else df.columns[1]
-        for _, row in df.iterrows():
-            try:
-                name = str(row[name_col])
-                change = float(row.get('涨跌幅', 0))
-                price = float(row.get('最新价', 0))
-                result[name] = (change, price if price else None)
-            except Exception:
+    def build(period):
+        rows = []
+        # date_buckets[n] 存放"从旧数第n期"的日期：bucket[1]=最旧期, bucket[5]=最新期
+        date_buckets = {n: [] for n in range(1, 6)}
+        for code, p, changes, dates, price in results:
+            if p != period:
                 continue
-    except Exception:
-        pass
+            rows.append({
+                '代码': code,
+                # chg_1..chg_5 从旧到新排列（右侧为最新）
+                'chg_1': changes[4], 'chg_2': changes[3], 'chg_3': changes[2], 'chg_4': changes[1], 'chg_5': changes[0],
+                'date_1': dates[4], 'date_2': dates[3], 'date_3': dates[2], 'date_4': dates[1], 'date_5': dates[0],
+                '最新价': price,
+            })
+            for n in range(1, 6):
+                d = dates[5 - n]
+                if d:
+                    date_buckets[n].append(d)
 
-    # 2. 东方财富行业板块 (补充)
-    try:
-        df = ak.stock_board_industry_name_em()
-        name_col = '板块名称' if '板块名称' in df.columns else df.columns[1]
-        for _, row in df.iterrows():
-            try:
-                name = str(row[name_col])
-                if name not in result:
-                    change = float(row.get('涨跌幅', 0))
-                    price = float(row.get('最新价', 0))
-                    result[name] = (change, price if price else None)
-            except Exception:
-                continue
-    except Exception:
-        pass
+        # 取每列众数日期作为展示列头（保证全表口径一致）
+        def mode_of(lst):
+            if not lst:
+                return ''
+            return max(set(lst), key=lst.count)
 
-    # 3. 同花顺行业汇总 (作为行业板块的回退)
-    try:
-        df = ak.stock_board_industry_summary_ths()
-        for _, row in df.iterrows():
-            try:
-                name = str(row['板块'])
-                change = float(row['涨跌幅'])
-                if name not in result:
-                    result[name] = (change, None)
-            except Exception:
-                continue
-    except Exception:
-        pass
+        df = pd.DataFrame(rows)
+        col_names = {}
+        for n in range(1, 6):
+            d = mode_of(date_buckets[n])
+            label = f"{d[4:6]}-{d[6:8]}" if len(d) >= 8 else f"第{n}期"
+            col_names[f'chg_{n}'] = f"{label}涨跌%"
+        df = df.rename(columns=col_names)
 
-    return result
+        latest_date = mode_of(date_buckets[5])  # 最新一期日期
+        return df, latest_date
+
+    return {'day': build("day"), 'week': build("week"), 'month': build("month")}
 
 # ================= 5. 数据读取与渲染 =================
 RAW_CSV = "板块全维底层数据_V5最新版.csv"
@@ -235,105 +266,83 @@ try:
     df_target[['周K_no_red', '周K_red_dist', '周K_red_cnt', '周K_green_dist']] = df_target['周K序列'].apply(lambda x: pd.Series(get_seq_priority(x)))
     df_target[['月K_no_red', '月K_red_dist', '月K_red_cnt', '月K_green_dist']] = df_target['月K序列'].apply(lambda x: pd.Series(get_seq_priority(x)))
 
-    # 获取最近5个交易日涨跌数据
-    stock_data = [(row['代码'], row['名称']) for _, row in df_target.iterrows()]
-    df_changes = get_sector_5days_changes(stock_data)
+    # 🎯 日/周/月K线分别拉取官方最近5期涨跌幅（含最新实时一期），各页面展示各自周期数据
+    codes_list = df_target['代码'].tolist()
+    changes_data = get_all_changes_multi(tuple(codes_list))
 
-    final_df = df_target.copy()
-    if df_changes is not None and not df_changes.empty:
-        final_df = pd.merge(final_df, df_changes, on='代码', how='left')
-    else:
-        for col in ['第5日涨跌(%)', '第4日涨跌(%)', '第3日涨跌(%)', '第2日涨跌(%)', '第1日涨跌(%)', '最新价']:
-            final_df[col] = 0.0
+    def merge_period(base_df, period_data):
+        out = base_df.copy()
+        df_chg, latest = period_data
+        if df_chg is not None and not df_chg.empty:
+            out = pd.merge(out, df_chg, on='代码', how='left')
+        if '最新价' not in out.columns:
+            out['最新价'] = 0.0
+        out['最新价'] = pd.to_numeric(out['最新价'], errors='coerce').fillna(0.0)
+        # 静默填充缺失值（不在页面显示任何错误/警告）
+        chg_cols = [c for c in out.columns if '涨跌' in str(c)]
+        for c in chg_cols:
+            out[c] = pd.to_numeric(out[c], errors='coerce').fillna(0.0)
+        return out, chg_cols, latest
 
-    # 格式化 NaN 值
-    fill_cols = ['第5日涨跌(%)', '第4日涨跌(%)', '第3日涨跌(%)', '第2日涨跌(%)', '第1日涨跌(%)', '最新价']
-    final_df.fillna({c: 0.0 for c in fill_cols}, inplace=True)
+    final_df, day_chg_cols, day_latest = merge_period(df_target, changes_data['day'])
+    week_df, week_chg_cols, week_latest = merge_period(df_target, changes_data['week'])
+    month_df, month_chg_cols, month_latest = merge_period(df_target, changes_data['month'])
 
-    # 获取今日实时涨跌并合并 (将今日数据插入为第1日，历史数据顺延)
-    sector_names = df_target['名称'].tolist()
-    today_data = get_today_realtime(sector_names)
-    today_date_str = datetime.now().strftime('%Y-%m-%d')
-    has_today = [False]
+    def fmt_latest_date(raw):
+        """最新期日期展示（当日实时会自动标注）"""
+        if raw and len(raw) >= 8:
+            s = f"{raw[:4]}-{raw[4:6]}-{raw[6:8]}"
+            if raw == datetime.now().strftime('%Y%m%d'):
+                s += "（今日实时）"
+            return s
+        return ""
 
-    if today_data:
-        def merge_today(row):
-            name = str(row['名称'])
-            if name in today_data:
-                today_change, today_price = today_data[name]
-                # 将历史 第1日→第2日, 第2日→第3日, ... 第4日→第5日
-                row['第5日涨跌(%)'] = row['第4日涨跌(%)']
-                row['第4日涨跌(%)'] = row['第3日涨跌(%)']
-                row['第3日涨跌(%)'] = row['第2日涨跌(%)']
-                row['第2日涨跌(%)'] = row['第1日涨跌(%)']
-                row['第1日涨跌(%)'] = float(today_change)
-                # 顺延日期
-                row['第5日日期'] = row['第4日日期']
-                row['第4日日期'] = row['第3日日期']
-                row['第3日日期'] = row['第2日日期']
-                row['第2日日期'] = row['第1日日期']
-                row['第1日日期'] = today_date_str
-                # 更新最新价
-                if today_price:
-                    row['最新价'] = float(today_price)
-                has_today[0] = True
-            return row
-
-        final_df = final_df.apply(merge_today, axis=1)
-
-    # 提取最新交易日信息
-    latest_date_str = ""
-    if has_today[0]:
-        latest_date_str = f"{today_date_str} (今日实时)"
-    elif not df_changes.empty and '第1日日期' in df_changes.columns:
-        valid_dates = df_changes[df_changes['第1日日期'] != '']['第1日日期']
-        if not valid_dates.empty:
-            latest_date_str = valid_dates.iloc[0]
+    day_date_str = fmt_latest_date(day_latest)
+    week_date_str = fmt_latest_date(week_latest)
+    month_date_str = fmt_latest_date(month_latest)
 
     # ==========================
     # 模块一：红绿柱资金检测 (三分屏)
     # ==========================
     if "红绿柱" in radar_mode:
         st.title("🔴 猎鹰系统：红绿柱资金异动检测")
-        if latest_date_str:
-            st.caption(f"📅 最新交易日: {latest_date_str}  |  展示最近5个交易日板块涨跌情况 (第1日=最新)")
         st.markdown("---")
 
         tab_day, tab_week, tab_month = st.tabs(["日K级别异动", "周K级别异动", "月K级别异动"])
 
         with tab_day:
+            if day_date_str:
+                st.caption(f"📅 日K数据日期: {day_date_str}  |  最近5个交易日涨跌（右侧为最新）")
             df_day = final_df[final_df['日K_green_dist'] < 999].copy()
             df_day = df_day.sort_values(by=['日K_no_red', '日K_red_dist', '日K_red_cnt', '日K_green_dist'], ascending=[True, True, True, True])
             df_day['日K视觉序列'] = df_day['日K序列'].apply(format_seq)
 
-            show_day = df_day[['代码', '名称', '日K定级', '日K得分', '日K视觉序列', '最新价',
-                               '第5日涨跌(%)', '第4日涨跌(%)', '第3日涨跌(%)', '第2日涨跌(%)', '第1日涨跌(%)']]
-            show_day.columns = ['板块代码', '板块名称', '日K定级', '横盘得分', '日K红绿柱序列', '最新价',
-                                '第5日涨跌(%)', '第4日涨跌(%)', '第3日涨跌(%)', '第2日涨跌(%)', '第1日涨跌(%)']
+            show_day = df_day[['代码', '名称', '日K定级', '日K得分', '日K视觉序列', '最新价'] + day_chg_cols[:5]]
+            show_day.columns = ['板块代码', '板块名称', '日K定级', '横盘得分', '日K红绿柱序列', '最新价'] + day_chg_cols[:5]
             show_day.index = range(1, len(show_day) + 1)
             st.dataframe(style_changes_df(show_day), use_container_width=True)
 
         with tab_week:
-            df_week = final_df[final_df['周K_green_dist'] < 999].copy()
+            if week_date_str:
+                st.caption(f"📅 周K数据日期: {week_date_str}  |  最近5个交易周涨跌（右侧为最新）")
+            df_week = week_df[week_df['周K_green_dist'] < 999].copy()
             df_week = df_week.sort_values(by=['周K_no_red', '周K_red_dist', '周K_red_cnt', '周K_green_dist'], ascending=[True, True, True, True])
             df_week['周K视觉序列'] = df_week['周K序列'].apply(format_seq)
 
-            show_week = df_week[['代码', '名称', '周K视觉序列', '最新价',
-                                 '第5日涨跌(%)', '第4日涨跌(%)', '第3日涨跌(%)', '第2日涨跌(%)', '第1日涨跌(%)']]
-            show_week.columns = ['板块代码', '板块名称', '周K红绿柱序列', '最新价',
-                                 '第5日涨跌(%)', '第4日涨跌(%)', '第3日涨跌(%)', '第2日涨跌(%)', '第1日涨跌(%)']
+            show_week = df_week[['代码', '名称', '周K视觉序列', '最新价'] + week_chg_cols[:5]]
+            show_week.columns = ['板块代码', '板块名称', '周K红绿柱序列', '最新价'] + week_chg_cols[:5]
             show_week.index = range(1, len(show_week) + 1)
             st.dataframe(style_changes_df(show_week), use_container_width=True)
 
         with tab_month:
-            df_month = final_df[final_df['月K_green_dist'] < 999].copy()
+            if month_date_str:
+                st.caption(f"📅 月K数据日期: {month_date_str}  |  最近5个交易月涨跌（右侧为最新）")
+            df_month = month_df[month_df['月K_green_dist'] < 999].copy()
             df_month = df_month.sort_values(by=['月K_no_red', '月K_red_dist', '月K_red_cnt', '月K_green_dist'], ascending=[True, True, True, True])
             df_month['月K视觉序列'] = df_month['月K序列'].apply(format_seq)
 
-            show_month = df_month[['代码', '名称', '月K视觉序列', '最新价',
-                                   '第5日涨跌(%)', '第4日涨跌(%)', '第3日涨跌(%)', '第2日涨跌(%)', '第1日涨跌(%)']]
-            show_month.columns = ['板块代码', '板块名称', '月K红绿柱序列', '最新价',
-                                  '第5日涨跌(%)', '第4日涨跌(%)', '第3日涨跌(%)', '第2日涨跌(%)', '第1日涨跌(%)']
+            show_month = df_month[['代码', '名称', '月K视觉序列', '最新价'] + month_chg_cols[:5]]
+            show_month.columns = ['板块代码', '板块名称', '月K红绿柱序列', '最新价'] + month_chg_cols[:5]
             show_month.index = range(1, len(show_month) + 1)
             st.dataframe(style_changes_df(show_month), use_container_width=True)
 
@@ -342,15 +351,14 @@ try:
     # ==========================
     elif "准备拉升" in radar_mode:
         st.title("🚀 猎鹰系统：'始'字准备拉升变盘")
-        if latest_date_str:
-            st.caption(f"📅 最新交易日: {latest_date_str}  |  展示最近5个交易日板块涨跌情况 (第1日=最新)")
+        if day_date_str:
+            st.caption(f"📅 数据日期: {day_date_str}  |  最近5个交易日涨跌（右侧为最新）")
         st.markdown("---")
 
         final_df['日K始字'] = final_df['日K始字'].astype(str).str.lower() == 'true'
         final_df['周K始字'] = final_df['周K始字'].astype(str).str.lower() == 'true'
         final_df['月K始字'] = final_df['月K始字'].astype(str).str.lower() == 'true'
 
-        # 处理可能的新字段（向前兼容）
         for col in ['日K拉升强度', '周K拉升强度', '月K拉升强度']:
             if col not in final_df.columns: final_df[col] = 0
             else: final_df[col] = pd.to_numeric(final_df[col], errors='coerce').fillna(0)
@@ -359,7 +367,6 @@ try:
             if col not in final_df.columns: final_df[col] = False
             else: final_df[col] = final_df[col].astype(str).str.lower() == 'true'
 
-        # 🎯 核心逻辑：计算共振数量
         final_df['共振周期数'] = final_df['日K始字'].astype(int) + final_df['周K始字'].astype(int) + final_df['月K始字'].astype(int)
 
         df_shi = final_df[final_df['共振周期数'] > 0].copy()
@@ -382,14 +389,14 @@ try:
             df_shi['周K变盘'] = df_shi.apply(lambda row: format_shi(row['周K始字'], row['周K拉升强度'], row['周K新板块']), axis=1)
             df_shi['日K变盘'] = df_shi.apply(lambda row: format_shi(row['日K始字'], row['日K拉升强度'], row['日K新板块']), axis=1)
 
-            show_shi = df_shi[['代码', '名称', '月K变盘', '周K变盘', '日K变盘', '共振周期数', '最新价',
-                               '第5日涨跌(%)', '第4日涨跌(%)', '第3日涨跌(%)', '第2日涨跌(%)', '第1日涨跌(%)']]
-            show_shi.columns = ['板块代码', '板块名称', '月K信号(最强)', '周K信号(中期)', '日K信号(短期)', '总共振数', '最新价',
-                                '第5日涨跌(%)', '第4日涨跌(%)', '第3日涨跌(%)', '第2日涨跌(%)', '第1日涨跌(%)']
+            show_shi = df_shi[['代码', '名称', '月K变盘', '周K变盘', '日K变盘', '共振周期数', '最新价'] + day_chg_cols[:5]]
+            show_shi.columns = ['板块代码', '板块名称', '月K信号(最强)', '周K信号(中期)', '日K信号(短期)', '总共振数', '最新价'] + day_chg_cols[:5]
             show_shi.index = range(1, len(show_shi) + 1)
 
             st.metric(label="当前捕获变盘目标总数", value=f"{len(show_shi)} 个")
             st.dataframe(style_changes_df(show_shi), use_container_width=True, height=800)
 
 except FileNotFoundError:
-    st.warning("⏳ 等待机甲生成底层数据文件 (找不到底层 CSV)...")
+    # 静默处理：不在页面显示"未连接/找不到数据"类提示，仅展示标题等待后台自动重试
+    st.title("🦅 猎鹰量化雷达引擎")
+    st.caption("系统后台同步中，页面将自动刷新，请稍候...")
