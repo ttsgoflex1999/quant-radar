@@ -152,11 +152,30 @@ _BJT = timezone(timedelta(hours=8))  # 同花顺K线日期以北京时间为准�
 def _now_bj():
     return datetime.now(_BJT)
 
+# 各周期允许最后一根K线的最大"陈旧天数"（覆盖春节等长假期）：
+# 超过限值视为脏数据 —— 防止当前年份文件请求失败时，静默拿上一年旧数据冒充最新数据
+_FRESH_LIMIT = {"day": 15, "week": 21, "month": 45}
+
+def _is_fresh(collected, period):
+    """新鲜度门控：最后一根K线日期必须在近期，否则判为失败（返回空，绝不显示陈旧数据）"""
+    if not collected:
+        return False
+    d = str(collected[-1][0])
+    if len(d) < 8:
+        return False
+    try:
+        bar_dt = datetime.strptime(d[:8], "%Y%m%d").replace(tzinfo=_BJT)
+    except ValueError:
+        return False
+    limit = _FRESH_LIMIT.get(period, 15)
+    return abs((_now_bj() - bar_dt).days) <= limit
+
 def fetch_recent_closes(code, period="day", need=7):
     """
     按周期直连同花顺官方日/周/月K线（一次请求返回全年，含最新实时一期）。
     数据不足时自动补上一年。共尝试3次（逐步退避+随机抖动防限流），
     每次失败后强制刷新v cookie再试，彻底失败才返回空（页面显示空白，绝不填假0）。
+    新鲜度门控：仅当最后一根K线属于近期才采纳，防止旧年份数据冒充最新。
     """
     p = _PERIOD_MAP.get(period, "01")
     for attempt in range(3):
@@ -175,9 +194,9 @@ def fetch_recent_closes(code, period="day", need=7):
                     break
             except Exception:
                 continue
-        if collected:
+        if collected and _is_fresh(collected, period):
             return collected[-need:]
-        _get_v_code(force_refresh=True)  # 失败刷新cookie后重试
+        _get_v_code(force_refresh=True)  # 失败/数据陈旧 → 刷新cookie后重试
     return []
 
 def _calc_changes(closes, n=5):
@@ -227,39 +246,43 @@ def get_all_changes_multi(codes_tuple):
             results.append(r)
 
     def build(period):
-        rows = []
-        # date_buckets[n] 存放"从旧数第n期"的日期：bucket[1]=最旧期, bucket[5]=最新期
+        # 第一步：每行建立 日期->涨跌 映射，并统计各列位次的众数日期
+        per_code = []
         date_buckets = {n: [] for n in range(1, 6)}
         for code, p, changes, dates, price in results:
             if p != period:
                 continue
-            rows.append({
-                '代码': code,
-                # chg_1..chg_5 从旧到新排列（右侧为最新）
-                'chg_1': changes[4], 'chg_2': changes[3], 'chg_3': changes[2], 'chg_4': changes[1], 'chg_5': changes[0],
-                'date_1': dates[4], 'date_2': dates[3], 'date_3': dates[2], 'date_4': dates[1], 'date_5': dates[0],
-                '最新价': price,
-            })
+            m = {d: ch for d, ch in zip(dates, changes) if d and ch is not None}
+            per_code.append((code, m, price))
             for n in range(1, 6):
                 d = dates[5 - n]
                 if d:
                     date_buckets[n].append(d)
 
-        # 取每列众数日期作为展示列头（保证全表口径一致）
         def mode_of(lst):
             if not lst:
                 return ''
             return max(set(lst), key=lst.count)
 
+        # 列头日期取全表众数：每个数值必须落在与自己日期一致的列下，绝不错位
+        col_dates = {n: mode_of(date_buckets[n]) for n in range(1, 6)}
+
+        rows = []
+        for code, m, price in per_code:
+            row = {'代码': code, '最新价': price}
+            for n in range(1, 6):
+                row[f'chg_{n}'] = m.get(col_dates[n])  # 该板块缺这一期 → 空白，绝不挪位填数
+            rows.append(row)
+
         df = pd.DataFrame(rows)
         col_names = {}
         for n in range(1, 6):
-            d = mode_of(date_buckets[n])
+            d = col_dates[n]
             label = f"{d[4:6]}-{d[6:8]}" if len(d) >= 8 else f"第{n}期"
             col_names[f'chg_{n}'] = f"{label}涨跌%"
         df = df.rename(columns=col_names)
 
-        latest_date = mode_of(date_buckets[5])  # 最新一期日期
+        latest_date = col_dates[5]  # 最新一期日期
         return df, latest_date
 
     return {'day': build("day"), 'week': build("week"), 'month': build("month")}
