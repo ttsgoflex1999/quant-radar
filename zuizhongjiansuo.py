@@ -21,23 +21,17 @@ POS_SEARCH = (1016, 115)
 POS_RESULT = (450, 250)   
 
 DEVICE_CONFIGS = {
-    # "127.0.0.1:16416": {
-    #     "OFFSET_Y": {"日K": 932, "周K": 932, "月K": 932},
-    #     "SHI_Y_START": 1120, "SHI_Y_END": 1150,
-    #     "BOX_TOP_OFFSET": 130, "BOX_BOTTOM_OFFSET": 650,
-    #     "TAB_STEP_X": 100  # 👈 一号机横向间隔距离(像素)
-    # },
     "127.0.0.1:16416": {
         "OFFSET_Y": {"日K": 850, "周K": 850, "月K": 850},
         "SHI_Y_START": 1020, "SHI_Y_END": 1050,
         "BOX_TOP_OFFSET": 100, "BOX_BOTTOM_OFFSET": 560,
-        "TAB_STEP_X": 100  # 👈 其他机甲横向间隔距离(像素)
+        "TAB_STEP_X": 100
     },
     "DEFAULT": {
         "OFFSET_Y": {"日K": 850, "周K": 850, "月K": 850},
         "SHI_Y_START": 1020, "SHI_Y_END": 1050,
         "BOX_TOP_OFFSET": 100, "BOX_BOTTOM_OFFSET": 560,
-        "TAB_STEP_X": 100  # 👈 其他机甲横向间隔距离(像素)
+        "TAB_STEP_X": 100
     }
 }
 
@@ -51,8 +45,8 @@ AMP_MAX_TOLERANCE = 0.30
 DRIFT_MAX_TOLERANCE = 0.20 
 
 INPUT_CSV = "all_boards_ths.csv" 
-OUTPUT_TXT = "板块雷达战报_最新.txt"
-OUTPUT_CSV = "板块全维底层数据_最新.csv"
+OUTPUT_TXT = "板块雷达战报_V5.txt"
+OUTPUT_CSV = "板块全维底层数据_V5最新版.csv"
 
 file_lock = threading.Lock()
 global_completed_count = 0 
@@ -74,23 +68,45 @@ def get_result_hash(results_dict):
     for tf in ["日K", "周K", "月K"]:
         r = results_dict[tf]
         seq = "".join(map(str, r['seq_arr']))
-        h_str += f"[{tf}:{r['shi']}_{r['score']}_{seq}]"
+        # 🎯 核心修复：把“拉升强度”和“是否为新板块”强行加入双阶段哈希比对！
+        h_str += f"[{tf}:{r['shi']}_{r['shi_intensity']}_{r['is_new']}_{r['score']}_{seq}]"
     return h_str
 
 def detect_shi_character_fast(img, pixel_base_y, config):
     top = pixel_base_y + config["SHI_Y_START"]
     bottom = pixel_base_y + config["SHI_Y_END"]
     width, height = img.size
-    left, right = max(0, min(SHI_X_START, width)), max(0, min(SHI_X_END, width))
     top, bottom = max(0, min(top, height)), max(0, min(bottom, height))
-    gray_pixel_count = 0
-    for x in range(left, right):
+    
+    # 🎯 还原丢失的功能 1：检测是否为“新板块”（K线过短）以及 触发拉升信号
+    left_narrow, right_narrow = max(0, min(730, width)), max(0, min(770, width))
+    non_bg_count = 0
+    gray_pixel_count_narrow = 0
+    
+    for x in range(left_narrow, right_narrow):
+        for y in range(top, bottom):
+            r, g, b = img.getpixel((x, y))
+            # 判断是否为空白黑背景
+            if r > 30 or g > 30 or b > 30:
+                non_bg_count += 1
+            if (50 < r < 170) and (50 < g < 170) and (50 < b < 170):
+                if abs(r - g) < 25 and abs(r - b) < 25 and abs(g - b) < 25:
+                    gray_pixel_count_narrow += 1
+                    
+    is_new = non_bg_count < 15  
+    has_shi = gray_pixel_count_narrow > 12
+
+    # 🎯 还原丢失的功能 2：对 (660, 770) 区间进行“拉升信号强度”测算
+    left_broad, right_broad = max(0, min(660, width)), max(0, min(770, width))
+    gray_pixel_count_broad = 0
+    for x in range(left_broad, right_broad):
         for y in range(top, bottom):
             r, g, b = img.getpixel((x, y))
             if (50 < r < 170) and (50 < g < 170) and (50 < b < 170):
                 if abs(r - g) < 25 and abs(r - b) < 25 and abs(g - b) < 25:
-                    gray_pixel_count += 1
-    return gray_pixel_count > 12
+                    gray_pixel_count_broad += 1
+
+    return has_shi, gray_pixel_count_broad, is_new
 
 def analyze_sideways_score(img):
     width, height = img.size
@@ -118,7 +134,6 @@ def analyze_sideways_score(img):
 
 # ================= 3. 核心工具包 =================
 def extract_timeframe_data(d, tf_name, worker_name, device_id, calc_score=True):
-    # 🎯 永远只找“日K”作为唯一的绝对锚点！
     anchor = d(text="日K")
     if not anchor.wait(timeout=5.0): 
         return False, None
@@ -126,14 +141,12 @@ def extract_timeframe_data(d, tf_name, worker_name, device_id, calc_score=True):
     bounds = anchor.info['bounds']
     base_bottom = bounds['bottom']
     
-    # 提取日K按钮的正中心物理坐标
     base_x = (bounds['left'] + bounds['right']) // 2
     base_y = (bounds['top'] + bounds['bottom']) // 2
     
     config = DEVICE_CONFIGS.get(device_id, DEVICE_CONFIGS["DEFAULT"])
     step_x = config.get("TAB_STEP_X", 100) 
     
-    # 🎯 降维打击：通过日K坐标盲推点击位置
     click_x = base_x
     click_y = base_y
     if tf_name == "周K":
@@ -141,12 +154,10 @@ def extract_timeframe_data(d, tf_name, worker_name, device_id, calc_score=True):
     elif tf_name == "月K":
         click_x = base_x + (step_x * 2)
 
-    # 🎯 坐标盲狙暴力双击！绕开一切UI检索误导
     d.click(click_x, click_y)
     time.sleep(0.2)
     d.click(click_x, click_y)
 
-    # 给足 2.5 秒的绝对渲染时间，彻底抹平网络延迟
     time.sleep(2.5) 
 
     img = d.screenshot(format='pillow').convert('RGB')
@@ -154,12 +165,14 @@ def extract_timeframe_data(d, tf_name, worker_name, device_id, calc_score=True):
     scale_y = img.size[1] / info['displayHeight']
 
     pixel_base_y_shi = int(base_bottom * scale_y)
-    has_shi = detect_shi_character_fast(img, pixel_base_y_shi, config)
+    
+    # 🎯 提取拉升强度与新板块标志
+    has_shi, shi_intensity, is_new = detect_shi_character_fast(img, pixel_base_y_shi, config)
+    
     validator_y = int(max(10, min(base_bottom + VALIDATOR_OFFSET_Y, 1900)))
     current_offset_y = config["OFFSET_Y"].get(tf_name, config["OFFSET_Y"]["日K"])
     target_y = int(max(10, min(base_bottom + current_offset_y, 1900)))
 
-    # 🎯 提取当前切片的像素指纹防伪
     val_box = img.crop((SCAN_X_START, target_y - 20, SCAN_X_END, target_y + 20))
     pixel_fingerprint = hashlib.md5(val_box.tobytes()).hexdigest()
 
@@ -192,8 +205,14 @@ def extract_timeframe_data(d, tf_name, worker_name, device_id, calc_score=True):
             best_score, best_tier = analyze_sideways_score(img.crop((target_left_x, box_top, BOX_X_END, box_bottom)))
 
     result = {
-        "shi": has_shi, "score": best_score, "tier": best_tier, 
-        "seq_file": seq_file, "seq_arr": data_array, "seq_term": seq_terminal,
+        "shi": has_shi, 
+        "shi_intensity": shi_intensity,
+        "is_new": is_new,
+        "score": best_score, 
+        "tier": best_tier, 
+        "seq_file": seq_file, 
+        "seq_arr": data_array, 
+        "seq_term": seq_terminal,
         "fingerprint": pixel_fingerprint
     }
     return True, result
@@ -209,12 +228,12 @@ def save_comprehensive_result(code, name, d_res, w_res, m_res):
     with file_lock: 
         if not os.path.exists(OUTPUT_CSV):
             with open(OUTPUT_CSV, "w", encoding="utf-8") as f:
-                f.write('时间,代码,名称,日K始字,日K得分,日K定级,日K序列,周K始字,周K序列,月K始字,月K序列\n')
+                f.write('时间,代码,名称,日K始字,日K拉升强度,日K新板块,日K得分,日K定级,日K序列,周K始字,周K拉升强度,周K新板块,周K序列,月K始字,月K拉升强度,月K新板块,月K序列\n')
         with open(OUTPUT_CSV, "a", encoding="utf-8") as f:
             f.write(f"{current_time},{code},{name},"
-                    f"{d_res['shi']},{d_res['score']},{d_res['tier']},\"{','.join(map(str, d_res['seq_arr']))}\","
-                    f"{w_res['shi']},\"{','.join(map(str, w_res['seq_arr']))}\","
-                    f"{m_res['shi']},\"{','.join(map(str, m_res['seq_arr']))}\"\n")
+                    f"{d_res['shi']},{d_res['shi_intensity']},{d_res['is_new']},{d_res['score']},{d_res['tier']},\"{','.join(map(str, d_res['seq_arr']))}\","
+                    f"{w_res['shi']},{w_res['shi_intensity']},{w_res['is_new']},\"{','.join(map(str, w_res['seq_arr']))}\","
+                    f"{m_res['shi']},{m_res['shi_intensity']},{m_res['is_new']},\"{','.join(map(str, m_res['seq_arr']))}\"\n")
         with open(OUTPUT_TXT, "a", encoding="utf-8") as f:
             f.write(f"[{current_time}] {code} {name} | 日K[{'🔥' if d_res['shi'] else '➖'} {d_res['score']}] | 周K[{'🔥' if w_res['shi'] else '➖'}] | 月K[{'🔥' if m_res['shi'] else '➖'}]\n")
             
@@ -284,6 +303,16 @@ def worker(device_id, task_queue, worker_name):
             if not input_success: 
                 raise Exception("搜索完全失败")
 
+            try:
+                fenshi = d(text="分时")
+                if fenshi.exists:
+                    for t in fenshi:
+                        if t.info['bounds']['top'] > 500:
+                            t.click()
+                            break
+                time.sleep(1.0)
+            except: pass
+
             # ============= 正常提取数据 =============
             results = {}
             for tf in ["日K", "周K", "月K"]:
@@ -292,15 +321,16 @@ def worker(device_id, task_queue, worker_name):
                 
                 is_empty = not any(x != 0 for x in res["seq_arr"])
 
-                # 🎯 像素级指纹防伪机制
                 for prev_tf, prev_res in results.items():
                     if res["fingerprint"] == prev_res["fingerprint"] and not is_empty:
                         raise Exception(f"🚨 幽灵卡顿发现！【{tf}】截取到了【{prev_tf}】的同模残影！强制重搜！")
 
                 results[tf] = res
-                shi_icon = "🔴有" if res['shi'] else "➖无"
+                shi_icon = f"🔴有(强:{res['shi_intensity']})" if res['shi'] else f"➖无(强:{res['shi_intensity']})"
+                new_tag = "🆕新板块 | " if res['is_new'] else ""
                 score_str = f"| 评分: {res['score']:>4} " if tf == "日K" else ""
-                print(f"  📺 [{worker_name}] {tf} | 始字:{shi_icon} {score_str}\n      扫描: [{res['seq_term']}]")
+                
+                print(f"  📺 [{worker_name}] {tf} | {new_tag}始字:{shi_icon} {score_str}\n      扫描: [{res['seq_term']}]")
             
         except Exception as e:
             print(f"  ⚠️ [{worker_name}] 板块 {stock_code} 异常: {e}")
@@ -311,7 +341,7 @@ def worker(device_id, task_queue, worker_name):
                 continue
             else:
                 print(f"  ❌ [{worker_name}] 板块 {stock_code} 连续3次失败，使用保底空数据！")
-                empty_res = {"shi": False, "score": 0, "tier": "提取失败", "seq_file": "", "seq_arr": [], "seq_term": "", "fingerprint": ""}
+                empty_res = {"shi": False, "shi_intensity": 0, "is_new": False, "score": 0, "tier": "提取失败", "seq_file": "", "seq_arr": [], "seq_term": "", "fingerprint": ""}
                 results = {"日K": empty_res, "周K": empty_res, "月K": empty_res}
 
         # ================= 5. 🎯 多阶段校验逻辑 =================
@@ -343,10 +373,17 @@ def process_and_sync():
     try:
         os.system('git add .') 
         os.system(f'git commit -m "🤖 quant-radar 自动战报同步：{time.strftime("%m-%d %H:%M")}"')
-        os.system('git push')
+        
+        push_status = os.system('git push')
+        if push_status != 0:
+            print("  ⚠️ 遭遇网络阻击，自动降级为 HTTP/1.1 强行突破...")
+            os.system('git config --global http.version HTTP/1.1')
+            os.system('git push')
+            os.system('git config --global http.version HTTP/2')
+            
         print("  ✅ 云端数据已成功推送至网站！")
     except Exception as e:
-        pass
+        print(f"  ❌ 同步异常: {e}")
 
 def wait_for_queue(tq):
     while tq.unfinished_tasks > 0:
@@ -391,7 +428,7 @@ if __name__ == "__main__":
             pass
     else:
         with open(output_file, "w", encoding="utf-8") as f:
-            f.write('时间,代码,名称,日K始字,日K得分,日K定级,日K序列,周K始字,周K序列,月K始字,月K序列\n')
+            f.write('时间,代码,名称,日K始字,日K拉升强度,日K新板块,日K得分,日K定级,日K序列,周K始字,周K拉升强度,周K新板块,周K序列,月K始字,月K拉升强度,月K新板块,月K序列\n')
 
     stock_list = df.iloc[START_INDEX:min(END_INDEX, len(df))]
     pending_stocks = [row for idx, row in stock_list.iterrows() if row['代码'] not in completed_stocks_set]
@@ -412,7 +449,6 @@ if __name__ == "__main__":
         time.sleep(1) 
 
     try:
-        # ================= 阶段一：初次扫描 =================
         print(f"\n=======================================================")
         print(f"🌀 【阶段一】开启全盘盲扫 (共 {len(pending_stocks)} 个板块)")
         print(f"=======================================================")
@@ -420,7 +456,6 @@ if __name__ == "__main__":
             task_queue.put({'代码': row['代码'], '名称': row['名称'], '重试次数': 0, 'phase': 1})
         wait_for_queue(task_queue)
 
-        # ================= 阶段二：二次复核 =================
         print(f"\n=======================================================")
         print(f"🌀 【阶段二】开启全盘交叉复核！相同则归档，不同则打入黑名单")
         print(f"=======================================================")
@@ -428,7 +463,6 @@ if __name__ == "__main__":
             task_queue.put({'代码': row['代码'], '名称': row['名称'], '重试次数': 0, 'phase': 2})
         wait_for_queue(task_queue)
 
-        # ================= 阶段三：终极表决 =================
         if suspicious_stocks:
             print(f"\n=======================================================")
             print(f"🌀 【阶段三】发现 {len(suspicious_stocks)} 个分歧板块！启动五机甲联合表决！")
